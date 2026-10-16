@@ -311,18 +311,24 @@ async function main(): Promise<void> {
     cursor = found + 1;
   }
 
-  // system prompt 一致：dsh system/message 的文本 = 请求首条 system 消息的文本。
+  // system prompt 一致：dsh system/message 的文本 = 请求全部前导 system 消息的拼接
+  // （S03 起桥合并多条前导 system——custom prompt 路径引擎发 2 条、stock 路径 3 条，
+  // 都是模型可见内容；本断言随之从"等于首条"升级为"等于拼接"，S03 修复声明见 HANDOFF）。
   const derivedSystem = derived.find((message) => message.role === "system");
-  const recordedSystem = recordedMessages.find((message) => message.role === "system");
-  assert(derivedSystem !== undefined && recordedSystem !== undefined, "both sides must carry a system prompt");
-  if (derivedSystem?.role === "system" && recordedSystem !== undefined) {
+  const recordedSystemText: string[] = [];
+  for (const message of recordedMessages) {
+    if (message.role !== "system") break;
+    recordedSystemText.push(typeof message.content === "string" ? message.content : "");
+  }
+  const recordedSystemJoined = recordedSystemText.join("\n\n");
+  assert(derivedSystem !== undefined && recordedSystemJoined.length > 0, "both sides must carry a system prompt");
+  if (derivedSystem?.role === "system") {
     const derivedSystemText = derivedSystem.content
       .map((block) => (block.type === "text" ? block.text : ""))
       .join("");
-    const recordedSystemText = typeof recordedSystem.content === "string" ? recordedSystem.content : "";
     assert(
-      derivedSystemText === recordedSystemText,
-      `system prompt mismatch: derived ${JSON.stringify(derivedSystemText.slice(0, 80))}... vs recorded ${JSON.stringify(recordedSystemText.slice(0, 80))}...`,
+      derivedSystemText === recordedSystemJoined,
+      `system prompt mismatch: derived ${JSON.stringify(derivedSystemText.slice(0, 80))}... vs recorded ${JSON.stringify(recordedSystemJoined.slice(0, 80))}...`,
     );
   }
 

@@ -16,7 +16,11 @@ import { createToolRegistry } from "@zcode/core";
 import type {
   AgentRuntimeConfig,
   AgentRuntimeDeps,
+  ContextBuilder,
+  ContextBuildResult,
   ExecuteTurnOptions,
+  ToolEntry,
+  ToolExecutionContext,
   ToolRegistry,
   TurnResult,
 } from "@zcode/core";
@@ -28,6 +32,7 @@ import {
   InMemorySessionEventStore,
 } from "@zcode/contracts";
 import type {
+  JsonSchema,
   Model,
   ModelEvent,
   ModelInputMessage,
@@ -39,6 +44,8 @@ import type {
   ModelToolCall,
   ModelToolContract,
   ModelUsage,
+  PermissionBrokerPort,
+  PermissionBrokerResult,
   SessionEvent,
   SessionEventSink,
   SessionEventStorePort,
@@ -65,7 +72,10 @@ export {
 export type {
   AgentRuntimeConfig,
   AgentRuntimeDeps,
+  ContextBuilder,
+  ContextBuildResult,
   ExecuteTurnOptions,
+  JsonSchema,
   Logger,
   Model,
   ModelEvent,
@@ -78,12 +88,16 @@ export type {
   ModelToolCall,
   ModelToolContract,
   ModelUsage,
+  PermissionBrokerPort,
+  PermissionBrokerResult,
   SessionEvent,
   SessionEventSink,
   SessionEventStorePort,
   SessionEventStoreStats,
   SessionId,
   SessionProjection,
+  ToolEntry,
+  ToolExecutionContext,
   ToolRegistry,
   TraceContext,
   TurnId,
@@ -224,4 +238,19 @@ export function createEmbeddedEngine(input: CreateEmbeddedEngineInput): AgentRun
     ...input.deps,
   };
   return new AgentRuntime(input.sessionId, config, deps);
+}
+
+/**
+ * S03 直通 permission broker：一切请求放行（decision "allow"）。
+ * 把关责任交给 dsh 工具管线（tools/pre-execute waterfall 等）——桥接工具的
+ * `needsApproval:false` 元数据使引擎不发起权限交互，本 broker 只是引擎面的
+ * 显式 allow 直通，不做任何决策。
+ */
+export function createAllowThroughPermissionBroker(): PermissionBrokerPort {
+  return {
+    requestPermission: (_request) => {
+      const result: PermissionBrokerResult = { decision: "allow", reason: "dsh pipeline owns gating" };
+      return Object.assign(Promise.resolve(result), { registered: Promise.resolve() });
+    },
+  };
 }

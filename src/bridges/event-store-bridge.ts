@@ -516,12 +516,25 @@ export class DshSessionEventStoreBridge implements SessionEventStorePort {
     // 上一缓冲（无工具的中间步）在此落定。
     this.flushPendingAssistant();
     // system prompt 只在首次请求落（原型：后续变化丢弃计数，不做 in-history 归一化）。
+    // S03 修复（最小改动，报告声明）：custom system prompt 路径下引擎会发**多条**前导
+    // system 消息（cli_prefix 身份行 + stable custom body），全部都是模型可见内容；
+    // 原实现只落 messages[0] 会让第二条（dsh 装配文本）绕过落盘，违反
+    // "Model-visible means logged"。现在把全部前导 system 拼接为一条 dsh
+    // system/message；单条 system 的 S02 行为不变（拼接结果 === 原文）。
     if (!this.systemMessageLogged) {
-      const head = payload.messages[0];
-      if (head?.role === "system" && typeof head.content === "string" && head.content.length > 0) {
+      const leadingSystemText: string[] = [];
+      for (const message of payload.messages) {
+        if (message.role === "system" && typeof message.content === "string") {
+          leadingSystemText.push(message.content);
+        } else {
+          break;
+        }
+      }
+      const systemText = leadingSystemText.join("\n\n");
+      if (systemText.length > 0) {
         this.options.session.append(
           "system/message",
-          { turn, step, message: createSystemMessage(head.content) },
+          { turn, step, message: createSystemMessage(systemText) },
           { surfaceOp: "append" },
         );
         this.systemMessageLogged = true;

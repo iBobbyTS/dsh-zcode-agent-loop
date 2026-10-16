@@ -1,0 +1,22 @@
+# zcode-loop-prototype 的 profile patch 样例（S03 交付物）。
+#
+# 用法（S04 冒烟消费）：把本包构建产物装进独立 npm dsh，然后
+#   dsh --profile zcode-loop --patch dsh-plugin-zcode-loop/cordis.patch.yml
+# launcher 会把本 patch 文档叠在所选 profile（建议 dsh-base）之上。
+#
+# 语义（任务合同指定）：
+# - disable stock `agent-loop` row（其 AgentLoop 构造器会 `setFactory`，与本插件
+#   互斥——`agents.setFactory` 对第二个工厂抛错，所以必须先 disable 再 insert）；
+# - insert 本插件 row：`ctx.agents.setFactory(this)` 由 ZcodeLoop 接管 agent 创建，
+#   模型请求经 dsh llm 路由（provider/model 指向已注册的 dsh adapter）。
+
+- id: agent-loop
+  disabled: true
+
+- insert:
+    - id: zcode-loop
+      name: 'dsh-plugin-zcode-loop'
+      config:
+        # 走 dsh llm 的 provider 路由（示例：deepseek adapter；冒烟用 mock）。
+        provider: deepseek
+        model: deepseek-chat
