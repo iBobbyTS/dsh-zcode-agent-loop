@@ -1,0 +1,7 @@
+packages:
+  - vendor/zcode/packages/*
+  - vendor/zcode/apps/zcode-cli/packages/*
+  - .
+
+allowBuilds:
+  esbuild: true

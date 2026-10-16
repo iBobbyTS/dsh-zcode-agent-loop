@@ -1,0 +1,27 @@
+{
+  "name": "dsh-plugin-zcode-loop",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Embed the vendored ZCode AgentRuntime as a dsh agent loop (prototype).",
+  "scripts": {
+    "build": "pnpm -r build && tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "cold-start": "tsx scripts/cold-start.ts",
+    "verify:facade": "node scripts/assert-facade-isolation.mjs",
+    "verify": "pnpm verify:facade && pnpm cold-start"
+  },
+  "dependencies": {
+    "@zcode/contracts": "workspace:*",
+    "@zcode/core": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "tsx": "^4.19.4",
+    "typescript": "^6.0.2",
+    "zod": "4.6.5"
+  },
+  "engines": {
+    "node": ">=24.0.0"
+  }
+}

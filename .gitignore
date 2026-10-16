@@ -1,0 +1,20 @@
+# Reference code
+reference/
+
+# Build artifacts / dependencies (S01 workspace)
+node_modules/
+dist/
+vendor/zcode/**/libs.generated.ts
+*.tsbuildinfo
+
+# IDE
+.vscode
+
+# Agent
+.agent-work
+.codegraph
+.zcodeignore
+.zcode
+
+# macOS
+.DS_Store
