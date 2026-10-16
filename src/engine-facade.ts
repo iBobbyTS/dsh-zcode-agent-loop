@@ -12,10 +12,12 @@
  *   test-agent-runtime / test-runtime-model 写法，照结构不照语义）。
  */
 import { AgentRuntime, SessionEventType } from "@zcode/core";
+import { createToolRegistry } from "@zcode/core";
 import type {
   AgentRuntimeConfig,
   AgentRuntimeDeps,
   ExecuteTurnOptions,
+  ToolRegistry,
   TurnResult,
 } from "@zcode/core";
 import {
@@ -28,11 +30,15 @@ import {
 import type {
   Model,
   ModelEvent,
+  ModelInputMessage,
   ModelOptions,
   ModelProperties,
   ModelRequest,
   ModelResult,
   ModelSelection,
+  ModelToolCall,
+  ModelToolContract,
+  ModelUsage,
   SessionEvent,
   SessionEventSink,
   SessionEventStorePort,
@@ -49,6 +55,7 @@ import type {
 // ------------------------------------------------------------------
 
 export { AgentRuntime, InMemorySessionEventStore, SessionEventType };
+export { createToolRegistry };
 export {
   createModelId,
   createModelProviderId,
@@ -62,17 +69,22 @@ export type {
   Logger,
   Model,
   ModelEvent,
+  ModelInputMessage,
   ModelOptions,
   ModelProperties,
   ModelRequest,
   ModelResult,
   ModelSelection,
+  ModelToolCall,
+  ModelToolContract,
+  ModelUsage,
   SessionEvent,
   SessionEventSink,
   SessionEventStorePort,
   SessionEventStoreStats,
   SessionId,
   SessionProjection,
+  ToolRegistry,
   TraceContext,
   TurnId,
   TurnResult,

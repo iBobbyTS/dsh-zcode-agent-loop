@@ -9,6 +9,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "cold-start": "tsx scripts/cold-start.ts",
     "verify:facade": "node scripts/assert-facade-isolation.mjs",
+    "verify:s02": "tsx scripts/s02-integration.ts",
     "verify": "pnpm verify:facade && pnpm cold-start"
   },
   "dependencies": {
@@ -16,6 +17,9 @@
     "@zcode/core": "workspace:*"
   },
   "devDependencies": {
+    "@deepseek-ai/cordis": "4.0.5",
+    "@deepseek-ai/dsh-llm": "0.2.1-alpha.5",
+    "@deepseek-ai/dsh-session": "0.2.1-alpha.5",
     "@types/node": "^24.0.0",
     "tsx": "^4.19.4",
     "typescript": "^6.0.2",
