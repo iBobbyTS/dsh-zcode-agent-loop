@@ -72,6 +72,7 @@ import { registerOffPeakCommands } from "./off-peak.js";
 import { createSelectionSideChat } from "./side-chat.js";
 import { ZcodeLoopAgent } from "./agent.js";
 import type { ZcodeLoopAgentDeps } from "./agent.js";
+import { ZcodeLoopRuntimes } from "./runtime-seam.js";
 import { DshSessionEventStoreBridge } from "./bridges/event-store-bridge.js";
 import { createAttachmentMediaBridge } from "./bridges/attachment-bridge.js";
 import type { AttachmentMediaBridge } from "./bridges/attachment-bridge.js";
@@ -329,6 +330,7 @@ export class ZcodeLoop extends Service implements AgentFactory {
    * 字段名保存。
    */
   private readonly loopCtx: Context;
+  private readonly runtimes: ZcodeLoopRuntimes;
   private readonly liveTeardowns = new Set<() => Promise<void>>();
   private readonly factoryAbort = new AbortController();
   private readonly pendingCreations = new Set<Promise<void>>();
@@ -336,6 +338,9 @@ export class ZcodeLoop extends Service implements AgentFactory {
   constructor(ctx: Context, public readonly config: Config) {
     super(ctx, "zcodeLoop");
     this.loopCtx = ctx;
+    // 窄接缝先于下面的 teardown effect 注册：fiber 卸载时 effect 逆序执行，
+    // 工厂 teardown（释放每个 agent 的 runtime 视图）先于服务注销。
+    this.runtimes = new ZcodeLoopRuntimes(ctx);
     const live = this.liveTeardowns;
     const factoryAbort = this.factoryAbort, pending = this.pendingCreations;
     ctx.effect(() => async () => {
@@ -626,7 +631,8 @@ export class ZcodeLoop extends Service implements AgentFactory {
       creationAbort.abort(new Error("Agent lifecycle disposed"));
       if (publication) await publication.catch(() => {});
       const failures: unknown[] = [];
-      for (const dispose of [() => created?.dispose(), () => offModelSelection?.(), () => detachAgent?.(),
+      for (const dispose of [() => created?.dispose(), () => this.runtimes.release(created),
+        () => offModelSelection?.(), () => detachAgent?.(),
         () => detachSession?.(), () => stored?.handle.close()]) {
         try { await dispose(); } catch (failure) { failures.push(failure); }
       }
@@ -884,6 +890,8 @@ export class ZcodeLoop extends Service implements AgentFactory {
       publication = this.loopCtx.agents.announce(agent, source, creationSignal);
       await publication;
       creationSignal.throwIfAborted();
+      // 发布完成后才允许扩展经窄服务解析；创建通知内 resolve 已可用。
+      this.runtimes.publish(agent, runtime);
       agent.start();
       creationSignal.throwIfAborted();
 
@@ -954,6 +962,8 @@ export class ZcodeLoop extends Service implements AgentFactory {
 }
 
 export default ZcodeLoop;
+export { ZcodeLoopRuntimes } from "./runtime-seam.js";
+export type { ZcodeLoopRuntimeRelease, ZcodeLoopRuntimeView } from "./runtime-seam.js";
 export { ZcodeLoopAgent } from "./agent.js";
 export { ZcodeLoopInbox } from "./inbox.js";
 export { createDshToolBridge } from "./bridges/tool-bridge.js";

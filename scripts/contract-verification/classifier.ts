@@ -128,7 +128,7 @@ export function classify(input: Input) {
     evidence=[x?`stock /events/${n} → ${x.peer?`zcode /events/${x.peer.index}`:'missing'}`:'stock absent',y?`zcode /events/${n} → ${y.peer?`stock /events/${y.peer.index}`:'extra'}`:'zcode absent'];
    } else {
     const reg=d.path.match(/^\/(ready|complete)\/(services|projections)\/\d+$/);
-    if(reg){const delta=sets.get(`${reg[1]}/${reg[2]}`)!;if(reg[2]==='services'&&same(delta,{missing:['agentLoop'],extra:['zcodeLoop']}))root='service-name';else if(reg[2]==='projections'&&same(delta,{missing:['inbox'],extra:[]}))root='inbox-projection';evidence=[JSON.stringify(delta)];}
+    if(reg){const delta=sets.get(`${reg[1]}/${reg[2]}`)!;if(reg[2]==='services'&&same(delta,{missing:['agentLoop'],extra:['zcodeLoop','zcodeLoopRuntimes']}))root='service-name';else if(reg[2]==='projections'&&same(delta,{missing:['inbox'],extra:[]}))root='inbox-projection';evidence=[JSON.stringify(delta)];}
     else if(d.path==='/projections/inbox'&&d.kind==='removed')root='inbox-projection';
     else if(/^\/projections\/turnBoundary\/(lastStepBoundary\/seq|lastStepStartSeq)$/.test(d.path)&&typeof d.stock==='number'&&typeof d.zcode==='number'&&a[d.stock]?.peer&&a[d.stock]!.peer===b[d.zcode])root='sequence-reference';
    }

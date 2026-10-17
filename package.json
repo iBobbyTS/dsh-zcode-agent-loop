@@ -43,6 +43,7 @@
     "verify:subagent-sidechat": "tsx scripts/subagent-sidechat-integration.ts",
     "verify:workflow": "tsx scripts/workflow-integration.ts",
     "verify:jobs-schedule": "tsx scripts/jobs-schedule-integration.ts",
+    "verify:runtime-seam": "tsx scripts/runtime-seam-integration.ts",
     "verify:matrix": "tsx scripts/verify-matrix.ts",
     "verify:contracts:selftest": "tsx scripts/contract-verification/selftest.ts",
     "verify:classify": "tsx scripts/contract-verification/classify.ts",
