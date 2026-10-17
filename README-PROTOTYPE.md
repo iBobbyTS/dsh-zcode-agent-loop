@@ -98,3 +98,6 @@ trace、bundle），可直接肉眼检查。
   dsh `resolveModelInfo` 真实来源取值（取值链与断言见 `scripts/s02-integration.ts`
   AC5）；**video / audio / pdf 输入不支持**，image 输入因数据通路未落地被门控关闭，
   toolUpdate 机制未启用——原因与补齐路径详见 [docs/GAPS.md](docs/GAPS.md)。
+- 引擎能力层的完整桥接盘点（按模块、含量化口径与建议接入顺序）见
+  [docs/CAPABILITIES.md](docs/CAPABILITIES.md)；事件投影层（84 种引擎事件的
+  翻译/丢弃明细）见 [docs/PROJECTION.md](docs/PROJECTION.md)。

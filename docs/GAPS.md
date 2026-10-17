@@ -1,5 +1,8 @@
 # 模型能力桥接：已补全项与缺口（zcode-loop 原型）
 
+本文档覆盖**模型元数据层**；引擎能力层的按模块桥接盘点见
+[CAPABILITIES.md](CAPABILITIES.md)，事件投影层见 [PROJECTION.md](PROJECTION.md)。
+
 本文档记录 ZCode 引擎面 `Model` 声明（`ModelProperties` + `ModelOptionSpecs`）与 dsh llm
 模型元数据（`LlmResolvedModelInfo`，经 `ctx.llm.resolveModelInfo(provider, model)` 按路由解析）
 之间的映射现状：哪些已打通、哪些不支持及原因。断言见 `scripts/s02-integration.ts` AC5。
