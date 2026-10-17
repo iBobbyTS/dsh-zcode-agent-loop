@@ -54,6 +54,7 @@ esbuild.buildSync({
     "@deepseek-ai/cordis",
     "@deepseek-ai/dsh-agent",
     "@deepseek-ai/dsh-llm",
+    "@deepseek-ai/dsh-scope",
     "@deepseek-ai/dsh-session",
     "@deepseek-ai/dsh-system-prompt",
     "@deepseek-ai/dsh-tools",

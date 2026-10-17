@@ -27,6 +27,7 @@ import z from "@deepseek-ai/schemastery";
 import type {
   AgentFactory,
   AgentHandle,
+  AgentOptions,
   CreateAgentOptions,
   ResumeAgentOptions,
 } from "@deepseek-ai/dsh-agent";
@@ -35,6 +36,7 @@ import type { LlmResolvedModelInfo } from "@deepseek-ai/dsh-llm";
 import { SessionLogOffset } from "@deepseek-ai/dsh-session";
 
 import { ZcodeLoopAgent } from "./agent.js";
+import type { ZcodeLoopAgentDeps } from "./agent.js";
 import { DshSessionEventStoreBridge } from "./bridges/event-store-bridge.js";
 import { createDshModelBridge } from "./bridges/model-bridge.js";
 import {
@@ -138,6 +140,7 @@ export class ZcodeLoop extends Service implements AgentFactory {
             storedCount: 0,
           };
 
+    let created: ZcodeLoopAgent | undefined;
     try {
       // ---- 路由（agentOptions 覆盖插件默认）----
       const agentOptions = options.agentOptions ?? {};
@@ -168,7 +171,23 @@ export class ZcodeLoop extends Service implements AgentFactory {
         // 工具执行期解析在册 agent（进入 dsh 执行输入的 agent 字段）。
         agent: () => this.loopCtx.agents.get(options.sessionId),
       });
-      const promptAssembly = await assembleDshSystemPrompt(this.loopCtx);
+      // 生效路由写回 agentOptions：agent.options 的 provider/model 是 persona 段
+      // prompt 变量（{{provider}}/{{model}}，web 模板自带 personaPrefix 引用）与
+      // UI 展示的事实来源；agentOptions 缺省时此前只落在局部变量上，装配上下文
+      // 读 agent.options.model 拿到 undefined → {{model}} 插值直接抛错。
+      const effectiveOptions: AgentOptions = { ...agentOptions, provider, model };
+      // runtime 晚绑定：prompt 装配必须带 agent（变量/上下文 provider 读
+      // context.agent，如 harness-dev-context 读 agent.session），而引擎
+      // config.systemPrompt 又依赖装配结果 —— 先建 agent、装配，再挂 runtime。
+      const agentDeps: ZcodeLoopAgentDeps = { toolBridge };
+      const agent = (created = new ZcodeLoopAgent(
+        this.loopCtx,
+        options.sessionId,
+        effectiveOptions,
+        session,
+        agentDeps,
+      ));
+      const promptAssembly = await assembleDshSystemPrompt(this.loopCtx, agent);
 
       // ---- ZCode 引擎（全经门面装配）----
       const runtime = createEmbeddedEngine({
@@ -208,12 +227,9 @@ export class ZcodeLoop extends Service implements AgentFactory {
           contextBuilder: createDshContextBuilder(promptAssembly) as unknown as ContextBuilder,
         },
       });
+      agentDeps.runtime = runtime;
 
       // ---- Agent + 发布（setup 在发布前跑，对齐 stock 的事务顺序）----
-      const agent = new ZcodeLoopAgent(this.loopCtx, options.sessionId, agentOptions, session, {
-        runtime,
-        toolBridge,
-      });
       const setupCommit = await options.setup?.(agent.ctx, agent);
       setupCommit?.commit();
 
@@ -239,10 +255,13 @@ export class ZcodeLoop extends Service implements AgentFactory {
           await agent.whenIdle();
           detachAgent();
           detachSession();
+          await agent.dispose();
         },
       };
     } catch (error: unknown) {
-      // 回滚：关闭未物化的写句柄（stock create 的 stored?.handle.close()）。
+      // 回滚：释放已铸造的 agent scope，关闭未物化的写句柄（stock create 的
+      // stored?.handle.close()）。
+      await created?.dispose().catch(() => {});
       await stored?.handle.close().catch(() => {});
       throw error;
     }

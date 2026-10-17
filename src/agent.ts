@@ -26,6 +26,8 @@ import type {
   InboxTarget,
 } from "@deepseek-ai/dsh-agent";
 import { agentEvents } from "@deepseek-ai/dsh-agent";
+import { createScope } from "@deepseek-ai/dsh-scope";
+import type { Scope } from "@deepseek-ai/dsh-scope";
 import type { UserMessage } from "@deepseek-ai/dsh-session";
 import type { Session as DshSession, SessionId as DshSessionId } from "@deepseek-ai/dsh-session";
 
@@ -34,7 +36,12 @@ import { ZcodeLoopInbox, userMessageText } from "./inbox.js";
 import type { DshToolBridge } from "./bridges/tool-bridge.js";
 
 export interface ZcodeLoopAgentDeps {
-  runtime: AgentRuntime;
+  /**
+   * 晚绑定：createAgent 先构造 agent（dsh system prompt 装配需要读
+   * agent.options/agent.session 的真实对象），再创建引擎并回填本字段；
+   * 引擎就绪前 agent 不会进入任何 turn（构造→装配→挂载→发布后才可被驱动）。
+   */
+  runtime?: AgentRuntime;
   toolBridge: DshToolBridge;
 }
 
@@ -42,8 +49,15 @@ type Phase = { kind: "idle" } | { kind: "busy" };
 
 export class ZcodeLoopAgent implements Agent {
   readonly inbox: ZcodeLoopInbox;
-  /** 原型：agent ctx 即插件 ctx（per-agent scope 的裁剪，见 HANDOFF）。 */
+  /**
+   * 每 agent 铸造的 scoped ctx（stock 同款 `createScope(loopCtx, this)`）：
+   * `scopeOf(agent.ctx)` 必须在场 —— agent preset 绑定（web 建会话挂「标准
+   * 模式」等 preset）与 `tools.presentAs/restrict` 等按 agent 注册的面都
+   * 以它为 scope key；此前直接用插件 ctx 会在 preset 绑定时抛
+   * "Agent preset binding requires a scoped context"。
+   */
   readonly ctx: Context;
+  private readonly scope: Scope;
   private phase: Phase = { kind: "idle" };
   private turnCounter = 0;
   private currentTurnAbort: AbortController | undefined;
@@ -57,9 +71,15 @@ export class ZcodeLoopAgent implements Agent {
     public readonly session: DshSession,
     private readonly deps: ZcodeLoopAgentDeps,
   ) {
-    this.ctx = loopCtx;
+    this.scope = createScope(loopCtx, this);
+    this.ctx = this.scope.ctx;
     this.inbox = new ZcodeLoopInbox(session);
     this.dispatch = agentEvents(loopCtx, this);
+  }
+
+  /** 释放 agent scoped ctx（handle.dispose 与创建回滚时调用，对齐 stock teardown）。 */
+  dispose(): Promise<void> {
+    return this.scope.dispose();
   }
 
   get status(): AgentStatus {
@@ -169,7 +189,11 @@ export class ZcodeLoopAgent implements Agent {
         const controller = new AbortController();
         this.currentTurnAbort = controller;
         try {
-          await this.deps.runtime.executeTurn(input, undefined, { abortSignal: controller.signal });
+          const runtime = this.deps.runtime;
+          if (runtime === undefined) {
+            throw new Error(`agent "${this.id}" has no runtime attached`);
+          }
+          await runtime.executeTurn(input, undefined, { abortSignal: controller.signal });
         } catch (error: unknown) {
           this.dispatch.emit("agent/error", { turn, step: 0, error });
         } finally {
