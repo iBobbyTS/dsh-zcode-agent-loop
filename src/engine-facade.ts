@@ -23,6 +23,7 @@ import type {
   ToolEntry,
   ToolExecutionContext,
   ToolRegistry,
+  TurnAttachment,
   TurnResult,
 } from "@zcode/core";
 import {
@@ -37,6 +38,7 @@ import {
 } from "@zcode/contracts";
 import type {
   AssistantMessageInfo,
+  FilePart,
   JsonSchema,
   MessageId,
   MessageInfo,
@@ -44,6 +46,7 @@ import type {
   MessageWithParts,
   Model,
   ModelEvent,
+  ModelImageContentBlock,
   ModelInputMessage,
   ModelMessageContent,
   ModelMessageContentBlock,
@@ -66,6 +69,13 @@ import type {
   SessionProjection,
   SessionStorePort,
   TextPart,
+  ToolArtifactReadRequest,
+  ToolArtifactReadResult,
+  ToolArtifactStatRequest,
+  ToolArtifactStatResult,
+  ToolArtifactStorePort,
+  ToolArtifactWriteRequest,
+  ToolArtifactWriteResult,
   ToolPart,
   TraceContext,
   TurnId,
@@ -96,6 +106,7 @@ export type {
   ContextBuilder,
   ContextBuildResult,
   ExecuteTurnOptions,
+  FilePart,
   JsonSchema,
   Logger,
   LogContext,
@@ -105,6 +116,7 @@ export type {
   MessageWithParts,
   Model,
   ModelEvent,
+  ModelImageContentBlock,
   ModelInputMessage,
   ModelMessageContent,
   ModelMessageContentBlock,
@@ -128,11 +140,13 @@ export type {
   SessionProjection,
   SessionStorePort,
   TextPart,
+  ToolArtifactStorePort,
   ToolEntry,
   ToolExecutionContext,
   ToolPart,
   ToolRegistry,
   TraceContext,
+  TurnAttachment,
   TurnId,
   TurnResult,
   UserMessageInfo,
@@ -272,6 +286,60 @@ export function createEmbeddedEngine(input: CreateEmbeddedEngineInput): AgentRun
     ...input.deps,
   };
   return new AgentRuntime(input.sessionId, config, deps);
+}
+
+/**
+ * 引擎内部 artifact store 的最小实现（仅承载引擎自己的 tool result media 收尾）。
+ *
+ * dsh session log（event-store 桥）才是 durable 真相；引擎 resume 走
+ * `persistedMessages` 直传，不读这些 artifact。它们只用于满足引擎在同一进程内
+ * `persistToolResultMediaAttachments` 的收尾要求（缺 store 时引擎会拒绝含图工具
+ * 结果）。因此这里用进程内 Map，不复制字节到第二份持久化存储。
+ */
+export function createInMemoryToolArtifactStore(): ToolArtifactStorePort {
+  let nextId = 0;
+  const records = new Map<string, { content: string; contentType: string; createdAt: Date }>();
+  return {
+    async writeToolResultArtifact(request: ToolArtifactWriteRequest): Promise<ToolArtifactWriteResult> {
+      const id = `zcode-loop-artifact-${++nextId}`;
+      const uri = `zcode-artifact://zcode-loop/${id}`;
+      const createdAt = new Date();
+      const contentType = request.contentType ?? "text/plain";
+      records.set(uri, { content: request.content, contentType, createdAt });
+      return {
+        id,
+        uri,
+        bytes: Buffer.byteLength(request.content, "utf8"),
+        contentType,
+        createdAt,
+      };
+    },
+    async readToolResultArtifact(request: ToolArtifactReadRequest): Promise<ToolArtifactReadResult> {
+      const record = records.get(request.uri);
+      if (record === undefined) throw new Error(`tool artifact "${request.uri}" is not available`);
+      return {
+        uri: request.uri,
+        content: record.content,
+        contentType: record.contentType,
+        bytes: Buffer.byteLength(record.content, "utf8"),
+      };
+    },
+    async statToolResultArtifact(request: ToolArtifactStatRequest): Promise<ToolArtifactStatResult> {
+      const record = records.get(request.uri);
+      if (record === undefined) throw new Error(`tool artifact "${request.uri}" is not available`);
+      return {
+        uri: request.uri,
+        bytes: Buffer.byteLength(record.content, "utf8"),
+        contentType: record.contentType,
+        mtimeMs: record.createdAt.getTime(),
+      };
+    },
+    // 不把 artifact 映射成执行世界路径：模型请求只需要 dataUrl/引用文本，
+    // 路径物化是可选增强（引擎对此有 unsupported 分支）。
+    async ensureMediaAttachmentPath() {
+      return { status: "unsupported" as const };
+    },
+  };
 }
 
 /**

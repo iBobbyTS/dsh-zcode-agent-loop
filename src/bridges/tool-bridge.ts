@@ -14,9 +14,11 @@
  *   post-execute 管线；dsh 工具插件对本桥无感。判别 probe：注册
  *   `tools/pre-execute` listener 计数（pipeline 集成脚本断言 ≥1）。
  * - 结果映射：dsh `ToolExecutionResult.content`（ContentBlock[]）逐块映射进
- *   引擎 `ModelMessageContent`（text/reasoning 保真；image/file 的 dsh 形态只带
- *   attachment 引用、没有引擎要求的 dataUrl，降级为可读文本占位并保留元数据；
- *   未知块 JSON 文本化，不静默丢弃）。`isError` 时抛 `Error`（引擎记 tool 失败
+ *   引擎 `ModelMessageContent`。text/reasoning 保真；image 经 attachment 桥
+ *   `readImage` 校验字节后生成带 `dataUrl` 的引擎图片块；file 没有 provider-
+ *   native 通道，保留引用文本（含只读路径）；未知块 JSON 文本化，不静默丢弃。
+ *   引擎的 `formatModelContent` 是同步接缝，handler 在执行期先异步解析并暂存
+ *   （见 resolvedModelContent）。`isError` 时抛 `Error`（引擎记 tool 失败
  *   → event-store-bridge 落 `tool/result{isError}`）。
  *
  * 超时与结果预算的唯一权威是 dsh：引擎侧 deadline 按 dsh `ToolDefinition.timeoutMs`
@@ -39,6 +41,7 @@ import type {
   ToolExecutionContext,
   ToolRegistry,
 } from "../engine-facade.js";
+import type { AttachmentMediaBridge } from "./attachment-bridge.js";
 
 export interface DshToolBridgeOptions {
   /** 挂载了 ToolRuntime（`ctx.tools`）的 Cordis context。 */
@@ -54,6 +57,11 @@ export interface DshToolBridgeOptions {
   onResultContent?: (callId: string, content: readonly ContentBlock[]) => void;
   /** 复用既有 registry（缺省新建；引擎侧 built-in 工具也会注册进来）。 */
   registry?: ToolRegistry;
+  /**
+   * dsh attachment 服务：工具结果 image 块读取校验字节 → 引擎图片块（dataUrl）。
+   * 缺席时图片降级为引用文本（T08 边界），不伪造媒体数据。
+   */
+  media?: AttachmentMediaBridge;
 }
 
 /** 一次同步的差量结果（诊断/断言用）。 */
@@ -118,11 +126,17 @@ function timeoutPolicyFor(declared: number | undefined): ToolEntry["timeout"] {
 }
 
 /**
- * dsh 工具结果块 → 引擎模型内容块。引擎的 image/file 块要求 dataUrl，而 dsh
- * 工具结果里的 image/file 只携带 attachment 引用（字节在 attachment store），
- * 因此这里不伪造媒体块：保留文本化占位与全部可读元数据，媒体通路留给 T14。
+ * dsh 工具结果块 → 引擎模型内容块。
+ *
+ * image：经 attachment 桥 `readImage` 校验字节后生成 `dataUrl` 图片块（真通路）；
+ * attachment 服务缺席时保留带元数据的文本占位（不伪造媒体）。
+ * file：dsh 从不让 provider 原生接收文件，保留引用文本（含宿主只读路径）。
+ * 未知块 JSON 文本化，不静默丢弃。
  */
-export function mapDshToolContent(content: readonly ContentBlock[]): ModelMessageContent {
+export async function mapDshToolContent(
+  content: readonly ContentBlock[],
+  media?: AttachmentMediaBridge,
+): Promise<ModelMessageContent> {
   const blocks: ModelMessageContentBlock[] = [];
   for (const block of content) {
     switch (block.type) {
@@ -136,19 +150,23 @@ export function mapDshToolContent(content: readonly ContentBlock[]): ModelMessag
         break;
       }
       case "image": {
-        const { attachment } = block;
-        const name = attachment.name === undefined ? "" : ` name=${attachment.name}`;
-        blocks.push({
-          type: "text",
-          text: `[image ${attachment.mediaType} attachmentId=${attachment.attachmentId} bytes=${attachment.bytes} ${attachment.width}x${attachment.height}${name}]`,
-        });
+        if (media !== undefined && media.available) {
+          blocks.push(await media.toEngineImage(block));
+        } else {
+          const { attachment } = block;
+          const name = attachment.name === undefined ? "" : ` name=${attachment.name}`;
+          blocks.push({
+            type: "text",
+            text: `[image ${attachment.mediaType} attachmentId=${attachment.attachmentId} bytes=${attachment.bytes} ${attachment.width}x${attachment.height}${name}]`,
+          });
+        }
         break;
       }
       case "file": {
-        const { attachment } = block;
         blocks.push({
           type: "text",
-          text: `[file ${attachment.name} attachmentId=${attachment.attachmentId} bytes=${attachment.bytes}]`,
+          text: media?.filePlaceholder(block.attachment)
+            ?? `[file ${block.attachment.name} attachmentId=${block.attachment.attachmentId} bytes=${block.attachment.bytes}]`,
         });
         break;
       }
@@ -163,13 +181,20 @@ export function mapDshToolContent(content: readonly ContentBlock[]): ModelMessag
   return blocks;
 }
 
-/** 文本投影（durable dsh `tool/result` 与错误正文共用）。 */
+/** 同步文本投影（错误正文与 durable 文本；不做 attachment 读取）。 */
 function dshContentText(content: readonly ContentBlock[]): string {
   return content.map((block): string => {
-    const mapped = mapDshToolContent([block]);
-    return typeof mapped === "string"
-      ? mapped
-      : mapped.map((entry) => (entry.type === "text" ? entry.text : "")).join("");
+    switch (block.type) {
+      case "text":
+      case "reasoning":
+        return block.text;
+      case "image":
+        return `[image ${block.attachment.mediaType} attachmentId=${block.attachment.attachmentId} bytes=${block.attachment.bytes}]`;
+      case "file":
+        return `[file ${block.attachment.name} attachmentId=${block.attachment.attachmentId} bytes=${block.attachment.bytes}]`;
+      default:
+        return JSON.stringify(block);
+    }
   }).join("\n");
 }
 
@@ -197,6 +222,9 @@ export interface DshToolBridge {
 export function createDshToolBridge(options: DshToolBridgeOptions): DshToolBridge {
   const registry = options.registry ?? createToolRegistry();
   const synced = new Map<string, ToolEntry>();
+  // handler 异步读图后，引擎的 formatModelContent 是同步接缝：按输出数组对象
+  // 暂存已解析的模型内容（WeakMap 不延长输出生命周期，也不改 dsh 块结构）。
+  const resolvedModelContent = new WeakMap<object, ModelMessageContent>();
 
   const entryFor = (schema: ToolSchema, agent: Agent | undefined): ToolEntry => {
     const name = schema.name;
@@ -243,11 +271,40 @@ export function createDshToolBridge(options: DshToolBridgeOptions): DshToolBridg
         riskLevel: "low",
         sideEffectScope: "none",
       },
-      handler: async (input: unknown, context: ToolExecutionContext) =>
-        executeThroughDshPipeline(options, schema.name, input, context),
-      // handler 返回 dsh ContentBlock[]；在这里转成引擎模型内容，保真到请求。
-      formatModelContent: (output: unknown) =>
-        mapDshToolContent(Array.isArray(output) ? (output as ContentBlock[]) : []),
+      handler: async (input: unknown, context: ToolExecutionContext) => {
+        const output = await executeThroughDshPipeline(options, schema.name, input, context);
+        // image 块需要校验读取后才可生成 dataUrl；在此一次性解析给同步格式化面。
+        resolvedModelContent.set(output, await mapDshToolContent(output, options.media));
+        return output;
+      },
+      // handler 返回 dsh ContentBlock[]；这里给出已解析的引擎模型内容，保真到请求。
+      formatModelContent: (output: unknown) => {
+        if (output !== null && typeof output === "object") {
+          const resolved = resolvedModelContent.get(output);
+          if (resolved !== undefined) return resolved;
+        }
+        return Array.isArray(output)
+          ? Array.from(output as ContentBlock[]).map((block): ModelMessageContentBlock => {
+            switch (block.type) {
+              case "text":
+              case "reasoning":
+                return { type: "text", text: block.text };
+              case "image":
+                return {
+                  type: "text",
+                  text: `[image ${block.attachment.mediaType} attachmentId=${block.attachment.attachmentId} bytes=${block.attachment.bytes}]`,
+                };
+              case "file":
+                return {
+                  type: "text",
+                  text: `[file ${block.attachment.name} attachmentId=${block.attachment.attachmentId} bytes=${block.attachment.bytes}]`,
+                };
+              default:
+                return { type: "text", text: JSON.stringify(block) };
+            }
+          })
+          : [];
+      },
     };
     return entry;
   };

@@ -31,10 +31,12 @@
  *   是唯一持久化真相，引擎自持久化不重复承担。
  */
 import type { ContentBlock } from "@deepseek-ai/dsh-llm";
+import type { FileAttachmentRef } from "@deepseek-ai/dsh-attachment";
 import type { SessionEvent as DshSessionEvent } from "@deepseek-ai/dsh-session";
 
 import type {
   AssistantMessageInfo,
+  FilePart,
   MessageId,
   MessagePart,
   MessageWithParts,
@@ -46,6 +48,8 @@ import type {
   UserMessageInfo,
 } from "../engine-facade.js";
 import { createMessageId, createPartId, createProjectId } from "../engine-facade.js";
+import { attachmentDigest } from "./attachment-bridge.js";
+import type { AttachmentMediaBridge } from "./attachment-bridge.js";
 
 // ------------------------------------------------------------------
 // 逆向翻译
@@ -87,16 +91,112 @@ function textPart(
   };
 }
 
+/** dsh image 引用 → 引擎 FilePart（hydrator 凭 dataUrl 还原图片内容块）。 */
+async function imagePart(
+  engineSessionId: SessionId,
+  messageId: MessageId,
+  seq: number,
+  partIndex: number,
+  block: Extract<ContentBlock, { type: "image" }>,
+  media: AttachmentMediaBridge,
+): Promise<FilePart> {
+  const ref = block.attachment;
+  const url = await media.imageDataUrl(ref);
+  return {
+    id: createPartId(`dsh-${seq}-${partIndex}`),
+    sessionID: engineSessionId,
+    messageID: messageId,
+    type: "file",
+    mime: ref.mediaType,
+    ...(ref.name === undefined ? {} : { filename: ref.name }),
+    url,
+    // 稳定身份留在 source：dsh 引用 id 不因重启/恢复变化（url 是重读字节）。
+    source: {
+      type: "resource",
+      clientName: "dsh-attachment",
+      uri: `dsh-attachment:${ref.attachmentId}`,
+      text: { value: "", start: 0, end: 0 },
+    },
+    metadata: {
+      sizeBytes: ref.bytes,
+      sha256: attachmentDigest(String(ref.attachmentId)),
+      storageKind: "inline",
+    },
+  };
+}
+
+/** dsh file 引用 → 引擎 FilePart（保留 ref 身份与可读路径，不内联字节）。 */
+function filePart(
+  engineSessionId: SessionId,
+  messageId: MessageId,
+  seq: number,
+  partIndex: number,
+  ref: FileAttachmentRef,
+  media: AttachmentMediaBridge | undefined,
+): FilePart {
+  const handle = `dsh-attachment:${ref.attachmentId}`;
+  const hostPath = media?.fileReadPath(ref);
+  return {
+    id: createPartId(`dsh-${seq}-${partIndex}`),
+    sessionID: engineSessionId,
+    messageID: messageId,
+    type: "file",
+    mime: "application/octet-stream",
+    filename: ref.name,
+    url: hostPath ?? handle,
+    source: hostPath === undefined
+      ? {
+        type: "resource",
+        clientName: "dsh-attachment",
+        uri: handle,
+        text: { value: handle, start: 0, end: 0 },
+      }
+      : {
+        type: "file",
+        path: hostPath,
+        text: { value: handle, start: 0, end: 0 },
+      },
+    metadata: {
+      sizeBytes: ref.bytes,
+      storageKind: hostPath === undefined ? "metadata_only" : "local_ref",
+    },
+  };
+}
+
 /**
  * 把 dsh session 全量事件（`session.snapshotEvents(SessionLogOffset(0))`，含
  * closers）逆向翻译成引擎历史。顺序即事件序；mid-log 的 plugin 记录等未知
  * 事件类型按 default 忽略。
+ *
+ * 图片：user/message 的 ImageBlock 经 attachment 桥校验读取后水合为 FilePart
+ * （`url` dataUrl + `source.uri=dsh-attachment:<id>`），引擎 history 与 standalone
+ * 请求都能重读；`image/offload` 决策命中的 occurrence 落占位文本（durable ref
+ * 仍在事件里）。tool/result 的图片不进入 ToolPart（引擎 ToolPart 输出只有
+ * 文本）；下一请求由 dsh `deriveMessages` 直接消费 durable 块。
  */
-export function translateDshEventsToEngineMessages(
+export async function translateDshEventsToEngineMessages(
   events: readonly DshSessionEvent[],
   engineSessionId: SessionId,
   visibleSeqs?: ReadonlySet<number>,
-): MessageWithParts[] {
+  media?: AttachmentMediaBridge,
+): Promise<MessageWithParts[]> {
+  // image/offload 是 durable surface 投影：恢复后的引擎历史也必须按同一决策
+  // 省略图片，否则 standalone 请求会把已 offload 的图片重新内联。
+  const offloadedImages = new Map<number, Set<number>>();
+  for (const event of events) {
+    if ((event.type as string) !== "image/offload") continue;
+    const targets = (event.data as { targets?: Array<{ seq?: unknown; imageIndexes?: unknown }> }).targets;
+    if (!Array.isArray(targets)) continue;
+    for (const target of targets) {
+      if (!Number.isSafeInteger(target.seq) || !Array.isArray(target.imageIndexes)) continue;
+      const indexes = offloadedImages.get(Number(target.seq)) ?? new Set<number>();
+      for (const index of target.imageIndexes) {
+        if (Number.isSafeInteger(index) && Number(index) >= 0) indexes.add(Number(index));
+      }
+      offloadedImages.set(Number(target.seq), indexes);
+    }
+  }
+
   const messages: MessageWithParts[] = [];
   /** callID → 最近一个铸造出来的 pending ToolPart（tool/result 配对用）。 */
   const openToolParts = new Map<string, ToolPart>();
@@ -124,9 +224,50 @@ export function translateDshEventsToEngineMessages(
         };
         const parts: MessagePart[] = [];
         let partIndex = 0;
+        let imageIndex = 0;
+        const offloaded = offloadedImages.get(event.seq);
         for (const block of message.content) {
           if (block.type === "text") {
             parts.push(textPart(engineSessionId, messageId, event.seq, partIndex, block.text));
+          } else if (block.type === "image") {
+            const omitted = block.offloaded === true || offloaded?.has(imageIndex) === true;
+            imageIndex += 1;
+            if (omitted) {
+              parts.push(textPart(
+                engineSessionId,
+                messageId,
+                event.seq,
+                partIndex,
+                media?.offloadedImageText(block.attachment)
+                  ?? `[image offloaded attachmentId=${block.attachment.attachmentId}]`,
+              ));
+            } else if (media === undefined || !media.available) {
+              parts.push(textPart(
+                engineSessionId,
+                messageId,
+                event.seq,
+                partIndex,
+                `[image ${block.attachment.mediaType} attachmentId=${block.attachment.attachmentId} bytes=${block.attachment.bytes}]`,
+              ));
+            } else {
+              parts.push(await imagePart(
+                engineSessionId,
+                messageId,
+                event.seq,
+                partIndex,
+                block,
+                media,
+              ));
+            }
+          } else if (block.type === "file") {
+            parts.push(filePart(
+              engineSessionId,
+              messageId,
+              event.seq,
+              partIndex,
+              block.attachment,
+              media,
+            ));
           }
           partIndex += 1;
         }

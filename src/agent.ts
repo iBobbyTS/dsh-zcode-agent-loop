@@ -26,7 +26,9 @@ import { SessionLogOffset, appendPluginRecord, pluginRecordOf } from "@deepseek-
 
 import type { AgentRuntime, ModelRequest } from "./engine-facade.js";
 import { createExternalTurnFaultError } from "./engine-facade.js";
-import { ZcodeLoopInbox, userMessageText } from "./inbox.js";
+import { ZcodeLoopInbox } from "./inbox.js";
+import { buildDshUserInput } from "./bridges/attachment-bridge.js";
+import type { AttachmentMediaBridge } from "./bridges/attachment-bridge.js";
 import type { DshSessionEventStoreBridge } from "./bridges/event-store-bridge.js";
 import type { DshToolBridge } from "./bridges/tool-bridge.js";
 import { DshPromptAdmission } from "./bridges/system-prompt-bridge.js";
@@ -41,6 +43,12 @@ export interface ZcodeLoopAgentDeps {
   runtime?: AgentRuntime;
   refreshHistory?: () => Promise<void>;
   toolBridge: DshToolBridge;
+  /**
+   * dsh attachment 媒体桥：把 inbox 用户消息的图片引用解析成引擎
+   * `executeTurn`/`steerTurn` 的宿主附件通道；user image 不降级为文本占位。
+   * 缺席时含图输入明确失败（不静默丢图）。
+   */
+  media?: AttachmentMediaBridge;
   /** 阶段 2：事件桥句柄——drain 每 turn 收口时取 dropStats 快照打点；缺席时跳过。 */
   eventBridge?: DshSessionEventStoreBridge;
   /**
@@ -210,7 +218,20 @@ export class ZcodeLoopAgent implements Agent {
     // Claim synchronously before awaiting the engine: external steering also
     // claims next-step, and must not submit these same contexts a second time.
     const claimed = this.inbox.claimMessages(messages.map((message) => message.id), this.turnCounter);
-    const result = await runtime.steerTurn({ input: messages.map(userMessageText).join("\n\n"), delivery: "guide" });
+    let input: Awaited<ReturnType<typeof buildDshUserInput>>;
+    try {
+      input = await buildDshUserInput(messages, this.deps.media);
+    } catch (error) {
+      // 媒体解析失败不吞上下文：恢复 pending，等下一次 pre-step 以 durable 内容进入请求。
+      for (const message of claimed) this.inbox.append("next-step", message);
+      this.deps.logDebug?.("tool context media resolution failed", { callId, error: String(error) });
+      return;
+    }
+    const result = await runtime.steerTurn({
+      input: input.text,
+      ...(input.attachments.length === 0 ? {} : { attachments: input.attachments }),
+      delivery: "guide",
+    });
     if (result.kind === "rejected") {
       this.deps.logDebug?.("tool context delivery rejected", { callId, reason: result.reason });
       for (const message of claimed) this.inbox.append("next-step", message);
@@ -276,23 +297,29 @@ export class ZcodeLoopAgent implements Agent {
     // Keep original input pending until the next host pre-step decides. The
     // engine guide only wakes its active loop; it is not surface admission.
     this.inbox.append("next-step", message);
-      void runtime
-        .steerTurn({ input: userMessageText(message), delivery: "guide" })
-        .then(
-          (result) => {
-            if (result.kind === "rejected") {
-              this.deps.logDebug?.("steerTurn rejected", {
-                reason: result.reason,
-                ...(result.activeTurnId === undefined
-                  ? {}
-                  : { activeTurnId: result.activeTurnId }),
-              });
-            }
-          },
-          (error: unknown) => {
-            this.deps.logDebug?.("steerTurn failed", { error: String(error) });
-          },
-        );
+    void buildDshUserInput([message], this.deps.media)
+      .then((input) => runtime.steerTurn({
+        input: input.text,
+        ...(input.attachments.length === 0 ? {} : { attachments: input.attachments }),
+        delivery: "guide",
+      }))
+      .then(
+        (result) => {
+          if (result.kind === "rejected") {
+            this.deps.logDebug?.("steerTurn rejected", {
+              reason: result.reason,
+              ...(result.activeTurnId === undefined
+                ? {}
+                : { activeTurnId: result.activeTurnId }),
+            });
+          }
+        },
+        (error: unknown) => {
+          // 图片解析失败不吞消息：原消息仍在 next-step，下一次 pre-step 会以
+          // dsh durable 内容进入请求；这里只记录引擎引导未送达。
+          this.deps.logDebug?.("steerTurn failed", { error: String(error) });
+        },
+      );
     return true;
   }
 
@@ -412,8 +439,13 @@ export class ZcodeLoopAgent implements Agent {
           // Only admitted messages reach the durable user-message bridge.
           this.deps.eventBridge?.setPendingUserMessages(decision.messages);
           this.deps.eventBridge?.setStartsRequestSeries(decision.startsRequestSeries === true);
-          const input = decision.messages.map(userMessageText).join("\n\n");
-          await runtime.executeTurn(input, undefined, { abortSignal: controller.signal });
+          const input = await buildDshUserInput(decision.messages, this.deps.media, controller.signal);
+          controller.signal.throwIfAborted();
+          await runtime.executeTurn(
+            input.text,
+            input.attachments.length === 0 ? undefined : input.attachments,
+            { abortSignal: controller.signal },
+          );
         } catch (error: unknown) {
           // 后续步被 dsh 拒绝：引擎的 TurnError 只是传递宿主决定，turn/end 的
           // blocked 已由 setTurnEndReason 落盘；保留它并停止，不重复报错。

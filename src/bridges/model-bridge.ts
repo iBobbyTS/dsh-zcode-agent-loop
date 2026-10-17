@@ -32,7 +32,6 @@ import type {
   RequestMessage,
   StreamChunk,
   TokenUsage,
-  TextBlock,
   ToolSchema,
 } from "@deepseek-ai/dsh-llm";
 import {
@@ -60,6 +59,7 @@ import type {
   ModelUsage,
   RuntimeModelFactory,
 } from "../engine-facade.js";
+import type { AttachmentMediaBridge } from "./attachment-bridge.js";
 
 /** dsh 失败归一化错误：`code`/`providerCode` 都是 dsh `LlmFailure.code`（provider 中立机读码）。 */
 export class DshModelError extends Error {
@@ -105,6 +105,12 @@ export interface DshModelBridgeOptions {
    * 不是 dsh 逐请求 `AgentOptions.maxTokens`（后者由 agent 在 waterfall 后钳制）。
    */
   maxOutputTokens?: number;
+  /**
+   * attachment 媒体桥：引擎 standalone 路径的 image 块需先写入 dsh attachment
+   * 存储再引用（dsh 请求只接受 `ImageBlock.attachment`）。主循环请求以 dsh
+   * session 派生消息为准，不依赖此路径；缺席且请求含图时明确报错。
+   */
+  media?: AttachmentMediaBridge;
 }
 
 const DEFAULT_CONTEXT_WINDOW = 200_000;
@@ -120,12 +126,10 @@ export type RefreshableModelFactory = RuntimeModelFactory & {
 };
 
 /**
- * 图片数据通路尚未落地：消息翻译只投影文本（`blockToText` 丢弃 image 块），
- * inbox/session 的 attachments 也未桥接（docs/GAPS.md）。通路补齐前即便
- * dsh 路由声明了 image 输入，也不向引擎放行，避免引擎保留图片块后被桥静默丢弃。
+ * 图片能力只来自 dsh 路由的显式声明：`inputModalities` 含 `image` 时引擎才
+ * 保留图片块；未声明（unknown）或显式 text-only 都按不支持处理，由引擎的
+ * media capability 投影落成明确占位文本（不静默丢图）。
  */
-const IMAGE_DATA_PATH_ENABLED = false;
-
 function bridgeModelProperties(contextWindow: number, resolved?: LlmResolvedModelInfo): ModelProperties {
   const modalities = resolved?.inputModalities;
   return {
@@ -133,7 +137,7 @@ function bridgeModelProperties(contextWindow: number, resolved?: LlmResolvedMode
     contextWindow,
     inputFormat: {
       supportsText: true,
-      supportsImage: IMAGE_DATA_PATH_ENABLED && (modalities?.includes("image") ?? false),
+      supportsImage: modalities?.includes("image") ?? false,
       // dsh 模态词表只有 text/image；video/audio/pdf 无来源，恒 false（docs/GAPS.md）。
       supportsVideo: false,
       supportsAudio: false,
@@ -185,25 +189,52 @@ function bridgeModelDeclaration(
 // ZCode ModelRequest → dsh GenerateOptions
 // ------------------------------------------------------------------
 
-/** 内容块的原型文本投影（引擎在请求装配侧已完成媒体投影，到达桥的正常只余 text）。 */
+/** 内容块的原型文本投影（非文本块在无媒体通路时保留显式占位）。 */
 function blockToText(block: { type: string } & Record<string, unknown>): string {
   if (block.type === "text" && typeof block.text === "string") return block.text;
   // reasoning 不进用户可见文本；其余块（image/file/video/resource_link）占位投影。
+  if (block.type === "image") return `[image ${String(block.mediaType ?? "unknown")}]`;
+  if (block.type === "file") return `[file ${String(block.mediaType ?? "unknown")}]`;
   return "";
 }
 
-function translateContent(
+async function translateContent(
   content: ModelInputMessage["content"],
-): TextBlock[] {
+  media: AttachmentMediaBridge | undefined,
+): Promise<ContentBlock[]> {
   if (typeof content === "string") {
     return content.length > 0 ? [{ type: "text", text: content }] : [];
   }
-  const texts: TextBlock[] = [];
+  const blocks: ContentBlock[] = [];
   for (const block of content) {
+    if (block.type === "text" && typeof block.text === "string") {
+      if (block.text.length > 0) blocks.push({ type: "text", text: block.text });
+      continue;
+    }
+    if (block.type === "reasoning") continue;
+    if (block.type === "image") {
+      if (typeof block.dataUrl !== "string") {
+        throw new Error("engine image content has no dataUrl");
+      }
+      if (media === undefined) {
+        throw new Error("image content cannot be routed: dsh attachment service is not mounted");
+      }
+      blocks.push(await media.toDshImage(block));
+      continue;
+    }
+    if (block.type === "file") {
+      // 文件没有 provider-native 通道；dsh 请求层也只接受 FileBlock 引用。
+      // 引擎块通常只有内联文本/uri，保留为显式引用文本边界。
+      const label = typeof block.name === "string" && block.name.length > 0
+        ? block.name
+        : typeof block.uri === "string" ? block.uri : "file";
+      blocks.push({ type: "text", text: `[file ${String(block.mediaType ?? "unknown")} ${label}]` });
+      continue;
+    }
     const text = blockToText(block as unknown as { type: string } & Record<string, unknown>);
-    if (text.length > 0) texts.push({ type: "text", text });
+    if (text.length > 0) blocks.push({ type: "text", text });
   }
-  return texts;
+  return blocks;
 }
 
 function translateToolCallsToBlocks(
@@ -230,39 +261,47 @@ function contentToText(content: ModelInputMessage["content"]): string {
  * ZCode `ModelInputMessage[]` → dsh `RequestMessage[]`。
  * 角色 1:1（system/user/assistant/tool）；assistant 的 `toolCalls` 内联为
  * `tool-call` 内容块；tool 消息按 `toolCallId` 配对（dsh 一条 tool 消息一个 result）。
+ * image 块先写入 dsh attachment 存储再引用；无媒体通路时明确报错。
  */
-export function translateMessagesToDsh(
+export async function translateMessagesToDsh(
   messages: ModelInputMessage[],
   fallbackSource: { provider: string; model: string },
-): RequestMessage[] {
-  return messages.map((message): RequestMessage => {
+  media: AttachmentMediaBridge | undefined,
+): Promise<RequestMessage[]> {
+  const translated: RequestMessage[] = [];
+  for (const message of messages) {
     switch (message.role) {
       case "system":
-        return createSystemMessage(contentToText(message.content));
+        translated.push(createSystemMessage(contentToText(message.content)));
+        break;
       case "user":
-        return createUserMessage({
-          content: translateContent(message.content),
+        translated.push(createUserMessage({
+          content: await translateContent(message.content, media),
           source: { kind: "user" },
-        });
+        }));
+        break;
       case "assistant":
-        return createAssistantMessage({
+        translated.push(createAssistantMessage({
           content: [
-            ...translateContent(message.content),
+            ...await translateContent(message.content, media),
             ...translateToolCallsToBlocks(message.toolCalls),
           ],
           source: {
             provider: message.providerId ?? fallbackSource.provider,
             model: message.modelId ?? fallbackSource.model,
           },
-        });
+        }));
+        break;
       case "tool":
-        return createToolResultMessage({
+        translated.push(createToolResultMessage({
           callId: ToolCallId(message.toolCallId ?? ""),
-          content: translateContent(message.content),
+          content: await translateContent(message.content, media),
           isError: message.isError ?? false,
-        });
+        }));
+        break;
     }
-  });
+  }
+  return translated;
 }
 
 function translateToolsToDsh(tools: ModelRequest["tools"]): ToolSchema[] | undefined {
@@ -413,7 +452,7 @@ export function createDshModelBridge(options: DshModelBridgeOptions): Refreshabl
        * `request.options.reasoningLevel`（引擎 agent-step 目前不用）> Model 绑定档位
        * （引擎经 `modelSelection.options.reasoningLevel` + `bind()` 注入）。
        */
-      const buildDshCall = (request: ModelRequest): {
+      const buildDshCall = async (request: ModelRequest): Promise<{
         config: {
           provider: string;
           model: string;
@@ -421,7 +460,7 @@ export function createDshModelBridge(options: DshModelBridgeOptions): Refreshabl
           reasoningEffort?: NonNullable<GenerateOptions["reasoningEffort"]>;
         };
         generateOptions: GenerateOptions;
-      } => {
+      }> => {
         const maxTokens = request.options?.maxOutputTokens;
         const reasoningLevel = request.options?.reasoningLevel ?? currentOptions.reasoningLevel;
         const reasoningEffort =
@@ -439,7 +478,7 @@ export function createDshModelBridge(options: DshModelBridgeOptions): Refreshabl
           generateOptions: {
             provider,
             model: modelId,
-            messages: translateMessagesToDsh(request.messages, { provider, model: modelId }),
+            messages: await translateMessagesToDsh(request.messages, { provider, model: modelId }, options.media),
             ...(tools === undefined ? {} : { tools }),
             ...(maxTokens === undefined ? {} : { maxTokens }),
             ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
@@ -449,7 +488,7 @@ export function createDshModelBridge(options: DshModelBridgeOptions): Refreshabl
       };
 
       const streamDsh = async function* (request: ModelRequest): AsyncGenerator<ModelEvent> {
-        const { config, generateOptions } = buildDshCall(request);
+        const { config, generateOptions } = await buildDshCall(request);
         if (options.streamRequest) {
           const state = emptyStreamState();
           try {
@@ -498,7 +537,7 @@ export function createDshModelBridge(options: DshModelBridgeOptions): Refreshabl
           return createModel({ ...currentOptions, ...nextOptions });
         },
         async generateText(request): Promise<ModelResult> {
-          const { config, generateOptions } = buildDshCall(request);
+          const { config, generateOptions } = await buildDshCall(request);
           const state = emptyStreamState();
           let text = "";
           const reasoning: Array<{ type: "reasoning"; text: string }> = [];

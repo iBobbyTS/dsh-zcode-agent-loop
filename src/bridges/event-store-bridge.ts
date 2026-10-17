@@ -71,6 +71,38 @@ interface RequestMessageView {
   content?: unknown;
 }
 
+/**
+ * request-only 比对键：engine 的 `model_request` 轨迹记录媒体投影前的消息，
+ * 而实际 adapter 请求可能已按路由能力把 image/video/pdf 换成显式省略文本
+ * （text-only 路由）。把两侧媒体块与省略文本都归一到同一标记，避免把正常的
+ * capability 投影误判成「request-only 上下文被替换」。
+ */
+function requestMessageComparisonKey(message: RequestMessageView): string {
+  const normalizeBlock = (block: unknown): unknown => {
+    if (block === null || typeof block !== "object") return block;
+    const record = block as Record<string, unknown>;
+    if (record.type === "image" || record.type === "video" || record.type === "file") {
+      return "[media]";
+    }
+    if (
+      record.type === "text" &&
+      typeof record.text === "string" &&
+      record.text.includes("Media omitted from provider request because the selected model does not support ")
+    ) {
+      return "[media]";
+    }
+    return block;
+  };
+  const content = Array.isArray(message.content)
+    ? message.content.map(normalizeBlock)
+    : message.content;
+  return JSON.stringify({
+    role: message.role,
+    content,
+    toolCalls: (message as { toolCalls?: unknown }).toolCalls,
+  });
+}
+
 interface ModelRequestPayload {
   messages: RequestMessageView[];
   providerId: string;
@@ -495,7 +527,7 @@ export class DshSessionEventStoreBridge implements SessionEventStorePort {
   /** Preserve engine request-only entries (output-limit continuation) without restoring stale history. */
   requestOnlyMessages(messages: readonly RequestMessageView[]): number[] {
     const recorded = this.recordedEngineRequest?.messages ?? [];
-    const key = (m: RequestMessageView) => JSON.stringify({ role: m.role, content: m.content, toolCalls: (m as { toolCalls?: unknown }).toolCalls });
+    const key = requestMessageComparisonKey;
     let cursor = 0;
     const extra: number[] = [];
     for (let i = 0; i < messages.length; i++) {

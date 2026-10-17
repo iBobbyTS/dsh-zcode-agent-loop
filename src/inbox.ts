@@ -57,7 +57,11 @@ export const inboxProjectionDefinition = {
   },
 } satisfies ProjectionDefinition<"inbox", InboxState>;
 
-/** 消息文本投影（引擎 turn 输入是纯文本；非 text 块占位）。 */
+/**
+ * 消息文本投影（兼容旧调用：只投影文本，非 text 块给可读占位）。
+ * 真实 turn 输入走 `buildDshUserInput`：image 进入引擎宿主附件通道，file 保留
+ * 引用文本；本函数保留给纯文本诊断面。
+ */
 export function userMessageText(message: UserMessage): string {
   const content: readonly ContentBlock[] = message.content;
   return content

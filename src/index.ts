@@ -73,6 +73,8 @@ import { createSelectionSideChat } from "./side-chat.js";
 import { ZcodeLoopAgent } from "./agent.js";
 import type { ZcodeLoopAgentDeps } from "./agent.js";
 import { DshSessionEventStoreBridge } from "./bridges/event-store-bridge.js";
+import { createAttachmentMediaBridge } from "./bridges/attachment-bridge.js";
+import type { AttachmentMediaBridge } from "./bridges/attachment-bridge.js";
 import { createDshLoggerAdapter } from "./bridges/logger-adapter.js";
 import { createDshModelBridge } from "./bridges/model-bridge.js";
 import type { RefreshableModelFactory } from "./bridges/model-bridge.js";
@@ -89,6 +91,7 @@ import { createDshToolBridge } from "./bridges/tool-bridge.js";
 import {
   createAllowThroughPermissionBroker,
   createEmbeddedEngine,
+  createInMemoryToolArtifactStore,
   createSessionId,
 } from "./engine-facade.js";
 import type {
@@ -543,19 +546,25 @@ export class ZcodeLoop extends Service implements AgentFactory {
    * `MessageWithParts[]`，并铸只覆盖 resumeFromStore 冷路径的哑 SessionStorePort。
    * 契约字段装配集中在 resume-adapter。
    */
-  private prepareResumeContext(
+  private async prepareResumeContext(
     session: DshSession,
     engineSessionId: EngineSessionId,
     directory: string,
-  ): {
+    media: AttachmentMediaBridge,
+  ): Promise<{
     messages: MessageWithParts[];
     sessionStore: SessionStorePort;
     turnBase: number;
     /** 阶段 4：会话上次实际路由（seed 最后 request/header 的 config）；无 header 时缺席。 */
     initialSelection?: { providerId: string; modelId: string };
-  } {
+  }> {
     const events = session.snapshotEvents(SessionLogOffset(0));
-    const messages = translateDshEventsToEngineMessages(events, engineSessionId, new Set(session.surface.nodes));
+    const messages = await translateDshEventsToEngineMessages(
+      events,
+      engineSessionId,
+      new Set(session.surface.nodes),
+      media,
+    );
     // 引擎恢复后 turnNumber 从历史用户消息数起；dsh seed 的已有 turn 数可能更多
     // （失败 turn 未必落过 user/message）。偏移 = 最大已有 turn − 引擎历史基线，
     // 保证新 turn 号接在 seed 之后不重复（event-store-bridge setTurnBase）。
@@ -668,6 +677,9 @@ export class ZcodeLoop extends Service implements AgentFactory {
         `zcode-loop:${String(input.sessionId).slice(0, 8)}`,
       );
       const eventBridge = new DshSessionEventStoreBridge({ session, sessionId, logger: dshLogger });
+      // dsh durable attachment 引用 ↔ 引擎媒体内容的唯一转换点（用户图片、
+      // 工具结果图片、冷恢复水合共用；服务缺席时图片通路明确失败）。
+      const mediaBridge = createAttachmentMediaBridge(this.loopCtx);
       const toolBridge = createDshToolBridge({
         ctx: this.loopCtx,
         // 桥先于 agent 构造；延迟解析本实例，供 schema/metadata/执行共享 scope。
@@ -675,6 +687,7 @@ export class ZcodeLoop extends Service implements AgentFactory {
         acceptContexts: (callId, messages) => agent.acceptToolContexts(callId, messages),
         // dsh 结果块结构直通 durable tool/result（引擎事件只带文本投影）。
         onResultContent: (callId, content) => eventBridge.setToolResultContent(callId, content),
+        media: mediaBridge,
       });
       // 生效路由写回 agentOptions：agent.options 的 provider/model 是 persona 段
       // prompt 变量（{{provider}}/{{model}}，web 模板自带 personaPrefix 引用）与
@@ -686,6 +699,7 @@ export class ZcodeLoop extends Service implements AgentFactory {
       // config.systemPrompt 又依赖装配结果 —— 先建 agent、装配，再挂 runtime。
       const agentDeps: ZcodeLoopAgentDeps = {
         toolBridge,
+        media: mediaBridge,
         // 阶段 2：桥句柄给 agent（drain 收口取 dropStats 打点）+ agent 的 debug
         // 打点出口（agent 自身无 logger，经同一 dshLogger 进 dsh 日志面）。
         eventBridge,
@@ -723,10 +737,11 @@ export class ZcodeLoop extends Service implements AgentFactory {
       // stage 7：seeded create（fork）带 ≥1 条 user/message 时与 resume 同路。
       const resumeContext =
         source === "resume" || hasSeedHistory(input.seed)
-          ? this.prepareResumeContext(
+          ? await this.prepareResumeContext(
               session,
               sessionId,
               input.meta?.cwd ?? process.cwd(),
+              mediaBridge,
             )
           : undefined;
       if (resumeContext !== undefined) eventBridge.setTurnBase(resumeContext.turnBase);
@@ -739,6 +754,7 @@ export class ZcodeLoop extends Service implements AgentFactory {
         streamRequest: (request, engineRequest) => agent.streamModelRequest(request, engineRequest),
         provider,
         model,
+        media: mediaBridge,
         ...(resolved === undefined ? {} : { resolved }),
         ...(this.config.contextWindow === undefined
           ? {}
@@ -789,6 +805,9 @@ export class ZcodeLoop extends Service implements AgentFactory {
           toolRegistry: toolBridge.registry,
           // 直通 allow：把关交给 dsh 管线（tools/pre-execute waterfall 等）。
           permissionBroker: createAllowThroughPermissionBroker(),
+          // 引擎内部媒体收尾需要 artifact store；dsh session log 才是 durable 真相，
+          // 这里只需进程内承载（见 createInMemoryToolArtifactStore 注释）。
+          artifactStore: createInMemoryToolArtifactStore(),
           // 构造期最小 contextBuilder（首轮起被引擎 rebuild 取代，见模块头注释）。
           contextBuilder: createDshContextBuilder(promptAssembly) as unknown as ContextBuilder,
           // 阶段 2：引擎内部日志（token 预算、压缩决策、resume 水合、流式 flush 等）
@@ -800,9 +819,15 @@ export class ZcodeLoop extends Service implements AgentFactory {
         },
       });
       agentDeps.runtime = runtime;
-      agentDeps.refreshHistory = () => runtime.resumeFromStore({
-        persistedMessages: translateDshEventsToEngineMessages(session.snapshotEvents(), sessionId, new Set(session.surface.nodes)),
-      }).then(() => undefined);
+      agentDeps.refreshHistory = async () => {
+        const messages = await translateDshEventsToEngineMessages(
+          session.snapshotEvents(),
+          sessionId,
+          new Set(session.surface.nodes),
+          mediaBridge,
+        );
+        await runtime.resumeFromStore({ persistedMessages: messages });
+      };
       eventBridge.setRequestBoundary((position) => agent.prepareModelStep(position));
       eventBridge.setPromptCommitter((prepared) => agent.commitPrompt(prepared));
       // 阶段 4：会话内换模型/换档。dsh UI 换选 → api-session-controller
