@@ -16,7 +16,7 @@ description: 在临时容器里启动 dsh web（挂载固定开发 DSH_HOME、�
 | 容器名 / 端口 | `zcode-loop-web`；宿主 `127.0.0.1:8391` → 容器 `8377` |
 | skill 资产 | `scripts/prepare.mjs`（装插件+备 patch 层）、`assets/Dockerfile`、`assets/start.sh`（容器入口） |
 
-prepare.mjs 做的事（幂等，可重跑）：esbuild 把 `dist/src/index.js` 打成单文件 bundle（`@deepseek-ai/*` external）→ 物化为 `<DSH_HOME>/profiles/web/node_modules/dsh-plugin-zcode-loop/`（每次刷新，保证与当前构建一致）→ 初始化 web profile（镜像 shipped 模板：dsh-base + dsh-web-app；已存在则不动用户层）→ 刷新 `<DSH_HOME>/patches/{repo.patch.yml,web-overlay.yml}`（repo 层 disable stock `agent-loop` + insert `zcode-loop`；overlay 层把插件行对齐 stock 默认路由 `deepseek-official/deepseek-flash`，不配任何凭证）。
+prepare.mjs 做的事（幂等，可重跑）：esbuild 把 `dist/src/index.js` 打成单文件 bundle（`@deepseek-ai/*` external）→ 物化为 `<DSH_HOME>/profiles/web/node_modules/dsh-plugin-zcode-loop/`（每次刷新，保证与当前构建一致）→ 初始化 web profile（镜像 shipped 模板：dsh-base + dsh-web-app；已存在则不动用户层）→ 刷新 `<DSH_HOME>/patches/{repo.patch.yml,web-overlay.yml}`（repo 层 disable stock `agent-loop` + insert `zcode-loop`；overlay 层把插件行对齐 stock 默认路由 `deepseek-official/deepseek-flash`，并给 `workspace-controller` 配 `documentsDirectory: /data/documents`，不配任何凭证）。
 
 ## 流程
 
@@ -61,4 +61,5 @@ curl -sL -c /tmp/c.txt -o /dev/null -w '%{http_code}\n' '<上一步的链接>'
 - `--public-url http://127.0.0.1:8391` 让启动行打出的 URL 直接是宿主可达形态（不用改写容器 IP）；浏览器信任栅栏（/api browser-trust fence）需要 `--trusted-host 127.0.0.1:8391`（及 `localhost:8391`）。
 - native 依赖（node-pty、koffi、node-addon-*）在 linux-arm64 均有 prebuilt，镜像无需编译工具链；`dsh-subprocess-local` 的 postinstall 只是 chmod。
 - 验证插件行生效：`docker exec zcode-loop-web node /opt/dsh-runtime/node_modules/@deepseek-ai/dsh/lib/bin.js --profile web --patch /data/patches/repo.patch.yml --patch /data/patches/web-overlay.yml --dump-config` 应看到 `agent-loop ... disabled: true` 与插入的 `zcode-loop` 行。
+- **默认工作区弹窗坑**：首次打开页面时 web UI 会请求创建默认工作区，其目录是 `<系统 Documents>/deepseek-harness/default-workspace`；Linux 上靠 `xdg-user-dir DOCUMENTS` 解析，而 slim 镜像没有该命令（即使装了，无桌面环境也会退回 `$HOME` 而被拒）——不配就弹「Unable to create default workspace. Use Choose workspace to select a folder.」。修复：overlay 给 `workspace-controller` 配 `documentsDirectory: /data/documents`（容器内路径 = DSH_HOME 的 `documents/`），registry 会自己 `mkdir -p` 并持久化到宿主侧。
 - 升级 dsh：改 `assets/Dockerfile` 里的版本号 + 重建镜像（版本对齐仓库 devDependency `@deepseek-ai/dsh`）。

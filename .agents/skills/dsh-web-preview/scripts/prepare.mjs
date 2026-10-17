@@ -98,6 +98,11 @@ writeFileSync(join(pkgDir, "package.json"), JSON.stringify({
 // ---- 4. 启动 patch 层（挂在 DSH_HOME 下，容器只挂这一个卷）----
 mkdirSync(join(home, "patches"), { recursive: true });
 mkdirSync(join(home, "workspace"), { recursive: true });
+// 默认工作区根：容器内 /data/documents（= 本目录 documents/）。首启时 web UI 会
+// 请求创建默认工作区；容器是 slim 镜像没有 xdg-user-dir，解析系统 Documents 目录
+// 必败，所以必须显式配置 workspace-controller 的 documentsDirectory（否则弹
+// “Unable to create default workspace”）。registry 会自己 mkdir -p。
+mkdirSync(join(home, "documents"), { recursive: true });
 cpSync(REPO_PATCH, join(home, "patches", "repo.patch.yml"));
 writeFileSync(join(home, "patches", "web-overlay.yml"), [
   "# web 预览 overlay（prepare.mjs 每次刷新）：把 zcode-loop 行对齐 profile 的",
@@ -108,6 +113,14 @@ writeFileSync(join(home, "patches", "web-overlay.yml"), [
   "  config:",
   "    provider: deepseek-official",
   "    model: deepseek-flash",
+  "",
+  "# 容器里没有 xdg-user-dir，系统 Documents 目录解析不出来；显式指定首启默认",
+  "# 工作区根目录（容器内路径 /data/documents），否则首次打开页面会弹",
+  "# “Unable to create default workspace”。最终目录：",
+  "# /data/documents/deepseek-harness/default-workspace。",
+  "- id: workspace-controller",
+  "  config:",
+  "    documentsDirectory: /data/documents",
   "",
 ].join("\n"));
 
