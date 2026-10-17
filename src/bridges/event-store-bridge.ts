@@ -9,7 +9,8 @@
  * 工具事件必须落在 open turn+step 内，step/end 收口时工具必须全部解析）：
  * - turn_started            → turn/start{turn}（+ 缓冲 user/message，等首个 model_request 落）
  * - model_request           → [上一步 assistant 缓冲落定 → step/end（若 open）] + step/start
- *                               + [system/message（仅首次）] + user/message + request/header
+ *                               + [system/message（仅首次）] + user/message
+ * - prepared-call hook       → canonical request/header + request/context before dispatch
  * - model_streaming         → 累积为该步 assistant 的紧凑流（AssistantStreamAccumulator）
  *                               （live：有 publisher 时逐 chunk 发 agent/assistant-stream frame）
  * - model_complete          → 缓冲 assistant/message（等工具结果或下一边界落）
@@ -26,6 +27,8 @@
 import type {
   AssistantStreamRecord,
   ContentBlock,
+  GenerateOptions,
+  PreparedLlmCall,
   StreamChunk,
   TokenUsage,
   UserMessage,
@@ -33,6 +36,7 @@ import type {
 import {
   AssistantStreamAccumulator,
   createAssistantMessage,
+  createDeveloperMessage,
   createSystemMessage,
   createToolResultMessage,
   createUserMessage,
@@ -40,7 +44,7 @@ import {
   ToolCallId,
 } from "@deepseek-ai/dsh-llm";
 import type { Session as DshSession } from "@deepseek-ai/dsh-session";
-import { SessionSeq } from "@deepseek-ai/dsh-session";
+import { canonicalHeader, headerEquals, SessionSeq } from "@deepseek-ai/dsh-session";
 import type { AssistantStreamFrame } from "@deepseek-ai/dsh-agent";
 
 import type {
@@ -352,6 +356,11 @@ export class DshSessionEventStoreBridge implements SessionEventStorePort {
   private toolResultListener: ((callId: string) => Promise<void>) | undefined;
   private streamErrorCount = 0;
   private systemMessageLogged = false;
+  private requestHeaderLogged = false;
+  private requestSurfaceGeneration: number;
+  /** Only the main model_request can admit a prepared envelope. */
+  private mainRequestPending = false;
+  private startsRequestSeries = false;
   private lastRequest: { provider: string; model: string } | undefined;
   private toolCallSeqs = new Map<string, number>();
   private translatedCount = 0;
@@ -376,6 +385,8 @@ export class DshSessionEventStoreBridge implements SessionEventStorePort {
 
   constructor(private readonly options: DshEventStoreBridgeOptions) {
     this.now = options.now ?? (() => Date.now());
+    this.requestSurfaceGeneration = options.session.surface.contentGeneration;
+    this.systemMessageLogged = options.session.deriveMessages().some((message) => message.role === "system");
   }
 
   /** dsh session（唯一落盘真相）。 */
@@ -391,6 +402,11 @@ export class DshSessionEventStoreBridge implements SessionEventStorePort {
    */
   setTurnBase(base: number): void {
     this.turnBase = Math.max(0, Math.trunc(base));
+  }
+
+  /** Preserve the existing host pre-step series marker until the next admitted call. */
+  setStartsRequestSeries(startsSeries: boolean): void {
+    this.startsRequestSeries = startsSeries;
   }
 
   /** 引擎 turnNumber（0 起）→ dsh turn 号（1 起，含 resume 偏移）。 */
@@ -611,6 +627,7 @@ export class DshSessionEventStoreBridge implements SessionEventStorePort {
     this.turn = turn;
     this.step = 0;
     this.stepOpen = false;
+    this.mainRequestPending = false;
     this.pendingAssistant = undefined;
     this.pendingToolEvents = [];
     this.toolCallSeqs = new Map();
@@ -688,12 +705,72 @@ export class DshSessionEventStoreBridge implements SessionEventStorePort {
       this.pendingUserText = undefined;
     }
     this.step = step;
-    this.options.session.append("request/header", {
-      header: { config: { provider: payload.providerId, model: payload.modelId } },
-      reason: this.lastRequest === undefined ? "initial" : "change",
-    });
+    this.mainRequestPending = true;
     this.lastRequest = { provider: payload.providerId, model: payload.modelId };
     this.resetStepStream();
+  }
+
+  /**
+   * Capture the admitted schemas and registration-bound config at the real dispatch
+   * seam. Engine model_request establishes the step, but cannot describe defaults
+   * or the final tool contract. Compaction requests never acquire this admission.
+   */
+  recordPreparedRequest(prepared: PreparedLlmCall, request: GenerateOptions): void {
+    if (this.compacting || !this.mainRequestPending || this.turn === undefined || !this.stepOpen) return;
+    this.mainRequestPending = false;
+    const session = this.options.session;
+    const tools = request.tools ?? [];
+    const header = canonicalHeader(structuredClone({
+      config: prepared.config,
+      adapterDefaults: prepared.adapterDefaults,
+      tools,
+    }));
+    const baseline = session.requestHeader();
+    const surfaceGeneration = session.surface.contentGeneration;
+    const startsSeries = this.startsRequestSeries || this.requestSurfaceGeneration !== surfaceGeneration;
+    this.startsRequestSeries = false;
+    let headerSeq: SessionSeq | undefined;
+    if (!this.requestHeaderLogged) {
+      headerSeq = session.append("request/header", {
+        header,
+        reason: baseline === undefined ? "initial" : "resume",
+        ...(startsSeries ? { startsSeries: true as const } : {}),
+      }).seq;
+      this.requestHeaderLogged = true;
+    } else if (baseline === undefined || !headerEquals(baseline, header)) {
+      headerSeq = session.append("request/header", {
+        header, reason: "change", ...(startsSeries ? { startsSeries: true as const } : {}),
+      }).seq;
+    } else if (startsSeries) {
+      session.append("request/header", { header, reason: "series" });
+    }
+    // Stock tool-history folding resolves additions through their header sequence.
+    if (baseline !== undefined && headerSeq !== undefined) {
+      const previousNames = new Set(baseline.tools?.map((tool) => tool.name));
+      const currentNames = new Set(tools.map((tool) => tool.name));
+      const additions = tools.filter((tool) => !previousNames.has(tool.name))
+        .map((tool) => ({ type: "tool-addition" as const, toolName: tool.name }));
+      const removals = (baseline.tools ?? []).filter((tool) => !currentNames.has(tool.name))
+        .map((tool) => ({ type: "tool-removal" as const, toolName: tool.name }));
+      if (additions.length > 0 || removals.length > 0) session.append("developer/message", {
+        turn: this.dshTurn(this.turn), step: this.step,
+        message: createDeveloperMessage({ source: { kind: "tool-registry" }, content: [...additions, ...removals] }),
+        ...(additions.length > 0 ? { headerSeq } : {}),
+      }, { surfaceOp: "append" });
+    }
+    this.requestSurfaceGeneration = surfaceGeneration;
+    const contextWindow = prepared.context?.contextWindow;
+    const systemPromptUpdate = prepared.systemPromptUpdate;
+    const context = {
+      provider: prepared.config.provider, model: prepared.config.model,
+      ...(contextWindow === undefined ? {} : { contextWindow }),
+      ...(systemPromptUpdate === undefined ? {} : { systemPromptUpdate }),
+    };
+    const previous = session.requestContext();
+    if (previous?.provider !== context.provider || previous.model !== context.model
+      || previous.contextWindow !== context.contextWindow || previous.systemPromptUpdate !== context.systemPromptUpdate) {
+      session.append("request/context", context);
+    }
   }
 
   /** 首个 chunk 前铸 attempt 并发 start frame（stock AssistantStreamAttempt.start 语义）。 */
@@ -1105,6 +1182,8 @@ export class DshSessionEventStoreBridge implements SessionEventStorePort {
     this.flushPendingAssistant();
     // turn 收口清理：未被本 turn 消费的 claim 批（未到 model_request）不得泄漏到下一 turn。
     this.pendingUserMessages = undefined;
+    this.mainRequestPending = false;
+    this.startsRequestSeries = false;
     // v4 关系校验：turn/end 前不允许 open step（消息类事件已在其内落定）。
     if (this.stepOpen) {
       this.options.session.append("step/end", { turn: this.dshTurn(turn), step: this.step });
@@ -1119,6 +1198,8 @@ export class DshSessionEventStoreBridge implements SessionEventStorePort {
     this.flushPendingAssistant();
     // turn 收口清理：未被本 turn 消费的 claim 批（未到 model_request）不得泄漏到下一 turn。
     this.pendingUserMessages = undefined;
+    this.mainRequestPending = false;
+    this.startsRequestSeries = false;
     // v4 关系校验：turn/end 前不允许 open step。（错误路径若还有未解析的
     // tool/call，durable 读取会拒绝——原型接受，见冒烟报告缺口。）
     if (this.stepOpen) {

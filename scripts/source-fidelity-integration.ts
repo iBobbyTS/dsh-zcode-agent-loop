@@ -136,6 +136,8 @@ interface FakeAppendRecord {
 function createFakeSession(): { appends: FakeAppendRecord[]; session: DshSession } {
   const appends: FakeAppendRecord[] = [];
   const fake = {
+    surface: { contentGeneration: 0 },
+    deriveMessages: () => [],
     append(type: string, data: unknown): { seq: number } {
       appends.push({ type, data });
       return { seq: appends.length };

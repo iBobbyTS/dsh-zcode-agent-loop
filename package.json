@@ -23,6 +23,7 @@
     "verify:facade": "node scripts/assert-facade-isolation.mjs",
     "verify": "pnpm verify:facade && pnpm cold-start",
     "verify:projection": "tsx scripts/projection-integration.ts",
+    "verify:request-provenance": "tsx scripts/request-provenance-integration.ts",
     "verify:pipeline": "tsx scripts/pipeline-integration.ts",
     "verify:smoke": "node scripts/smoke.mjs",
     "verify:source-fidelity": "tsx scripts/source-fidelity-integration.ts",

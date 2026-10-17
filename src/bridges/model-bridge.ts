@@ -18,7 +18,8 @@
  * `refresh({ resolved })` 热更新（外壳监听 dsh `model/selection` 时调用），对下一次
  * factory 调用生效，已创建的 Model 不回溯。
  *
- * 不变量：桥只翻译流；不缓存、不落盘、不做路由决策（provider/model 路由属于 dsh llm）。
+ * 不变量：桥翻译流并在 prepared-call 接缝通知宿主；不缓存、不自行落盘、
+ * 不做路由决策（provider/model 路由属于 dsh llm）。
  */
 import type { Context } from "@deepseek-ai/cordis";
 import type {
@@ -90,6 +91,8 @@ export interface DshModelBridgeOptions {
    * 显式 config 字段优先于它，它优先于硬编码默认；查询失败传 undefined 即回落。
    */
   resolved?: LlmResolvedModelInfo;
+  /** Main-request admission hook, after preparation and before provider dispatch. */
+  onPreparedRequest?: (prepared: PreparedLlmCall, request: GenerateOptions) => void;
   /** 声明给引擎的上下文窗口（进入 `Model.properties.contextWindow`）。 */
   contextWindow?: number;
   /** 声明给引擎的最大输出 token（进入 `Model.optionSpecs.maxOutputTokens.max`）。 */
@@ -444,7 +447,9 @@ export function createDshModelBridge(options: DshModelBridgeOptions): Refreshabl
           throw normalizeBridgeError(error);
         }
         const state = emptyStreamState();
-        const chunks = prepared.stream(withPreparedDefaults(generateOptions, prepared));
+        const dispatch = withPreparedDefaults(generateOptions, prepared);
+        options.onPreparedRequest?.(prepared, dispatch);
+        const chunks = prepared.stream(dispatch);
         for await (const chunk of chunks) {
           const events: ModelEvent[] = [];
           translateChunk(chunk, state, events);
@@ -484,7 +489,9 @@ export function createDshModelBridge(options: DshModelBridgeOptions): Refreshabl
           const reasoning: Array<{ type: "reasoning"; text: string }> = [];
           let finishReason = "stop";
           let usage: ModelUsage = {};
-          for await (const chunk of prepared.stream(withPreparedDefaults(generateOptions, prepared))) {
+          const dispatch = withPreparedDefaults(generateOptions, prepared);
+          options.onPreparedRequest?.(prepared, dispatch);
+          for await (const chunk of prepared.stream(dispatch)) {
             const events: ModelEvent[] = [];
             translateChunk(chunk, state, events);
             for (const event of events) {
@@ -539,12 +546,7 @@ export function createDshModelBridge(options: DshModelBridgeOptions): Refreshabl
  * options —— dsh 的缺省语义原样保留，桥不自行填缺省。
  */
 function withPreparedDefaults(generateOptions: GenerateOptions, prepared: PreparedLlmCall): GenerateOptions {
-  const { maxTokens, reasoningEffort } = prepared.config;
-  return {
-    ...generateOptions,
-    ...(maxTokens === undefined ? {} : { maxTokens }),
-    ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
-  };
+  return { ...generateOptions, ...prepared.config };
 }
 
 /** 流外的 dsh `LlmError`（含 `failure` 事实）归一化为 `DshModelError`（保 code）。 */

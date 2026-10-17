@@ -534,6 +534,7 @@ export class ZcodeLoop extends Service implements AgentFactory {
       // （refresh 热更新 resolved 元数据），不能只作内联实参。
       const modelFactory = createDshModelBridge({
         ctx: this.loopCtx,
+        onPreparedRequest: (prepared, request) => eventBridge.recordPreparedRequest(prepared, request),
         provider,
         model,
         ...(resolved === undefined ? {} : { resolved }),

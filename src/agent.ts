@@ -29,6 +29,7 @@ import type {
   AssistantStreamFrame,
   CancelOptions,
   InboxTarget,
+  PreStepDecision,
 } from "@deepseek-ai/dsh-agent";
 import { agentEvents } from "@deepseek-ai/dsh-agent";
 import { createScope } from "@deepseek-ai/dsh-scope";
@@ -310,17 +311,13 @@ export class ZcodeLoopAgent implements Agent {
     this.setPhase(true);
     try {
       while (this.inbox.hasPending) {
-        const turn = ++this.turnCounter;
+        const turn = this.turnCounter + 1;
         const batch = this.inbox.claim("next-turn", turn);
         if (batch.length === 0) break;
-        // 阶段 8a：claim 的原始消息批交给事件桥——model_request 落盘时逐条
-        // append 原消息对象（producer source 保真）；turn 收口由桥自清。
-        this.deps.eventBridge?.setPendingUserMessages(batch);
         // 每 turn 同步 agent 可见工具；引擎另缓存模型 contract，须一起失效，
         // 否则后续 preset 工具增删虽已更新 registry，模型仍收到上一轮工具表。
         this.deps.toolBridge.syncTools();
         this.deps.runtime?.invalidateToolCache();
-        const input = batch.map(userMessageText).join("\n\n");
         const controller = new AbortController();
         this.currentTurnAbort = controller;
         try {
@@ -328,6 +325,18 @@ export class ZcodeLoopAgent implements Agent {
           if (runtime === undefined) {
             throw new Error(`agent "${this.id}" has no runtime attached`);
           }
+          // The host owns explicit request-series boundaries (goal continuation,
+          // for example). Preserve that decision at the same turn admission seam.
+          const decision: PreStepDecision = await this.dispatch.waterfall("agent/pre-step", {
+            messages: batch, turn, step: 1, signal: controller.signal,
+          }, () => Promise.resolve({ kind: "enter" as const, messages: batch }));
+          controller.signal.throwIfAborted();
+          if (decision.kind === "reject") continue;
+          this.turnCounter = turn;
+          // Only admitted messages reach the durable user-message bridge.
+          this.deps.eventBridge?.setPendingUserMessages(decision.messages);
+          this.deps.eventBridge?.setStartsRequestSeries(decision.startsRequestSeries === true);
+          const input = decision.messages.map(userMessageText).join("\n\n");
           await runtime.executeTurn(input, undefined, { abortSignal: controller.signal });
         } catch (error: unknown) {
           this.dispatch.emit("agent/error", { turn, step: 0, error });
