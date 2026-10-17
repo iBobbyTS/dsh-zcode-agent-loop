@@ -421,14 +421,17 @@ export class ZcodeLoopAgent implements Agent {
             this.deps.eventBridge?.endHostTurn({ kind: "blocked" });
             break;
           }
-          // 开启段或 turn 内失败：保证 turn/end 收口，报一次 agent/error 后停止
-          // driver；排队输入保持 pending，等待新输入唤醒。
-          this.deps.eventBridge?.endHostTurn(controller.signal.aborted
+          // 开启段或 turn 内失败：保证 turn/end 收口后停止 driver；排队输入保持
+          // pending，等待新输入唤醒。abort 是宿主显式取消（stock 同款：turn/end
+          // 记 aborted 且不报 agent/error——goal-round-driver 依赖这一点先 pause
+          // 后 disarm；若这里发 agent/error，它会先 disarm 而丢掉 pause 语义）。
+          const aborted = controller.signal.aborted;
+          this.deps.eventBridge?.endHostTurn(aborted
             ? { kind: "aborted", reason: { ...(controller.signal.reason as AgentCancelCause) } }
             // stock 同款：非 LlmError 一律 flatten cause 链到 UNKNOWN，避免 durable
             // turn/end 只剩引擎包装文案（如 "Turn execution failed"）而丢失 adapter 根因。
             : { kind: "error", error: { code: "UNKNOWN", message: errorChain(error) } });
-          this.dispatch.emit("agent/error", { turn, step: 0, error });
+          if (!aborted) this.dispatch.emit("agent/error", { turn, step: 0, error });
           break;
         } finally {
           this.toolContexts.clear();

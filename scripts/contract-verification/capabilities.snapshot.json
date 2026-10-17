@@ -4281,7 +4281,7 @@
     "vendor/zcode/packages/zcode-cua/request-access-contract.d.ts:CuaRequestAccessStatusSchema": "9ec4a5801d05226ac9916cace7a241ee9a6a5b475cf90ead9783a7eafb03b838"
   },
   "implementations": {
-    "src/agent.ts": "a37462cf15f4cd7701cdd25e98f4805ebe4ca6ca50dc31528856327611fc7adb",
+    "src/agent.ts": "d3db8b6f90e209435ddc9495e1385ca7eafbd47369221a439cdcf8f20bb2998e",
     "src/bridges/event-store-bridge.ts": "a7b46d87a45734303290f8c794633d77d0b1b927ac33131f97001d65808806ae",
     "src/bridges/logger-adapter.ts": "852fec3b7728c256689e1bc23b50c5a2e705d1e5e15c22d79d16709eca8895bf",
     "src/bridges/model-bridge.ts": "f0f7428e90564e81d8058cf930743b76e878aa414785929d46869ea0d9088414",
@@ -5396,7 +5396,7 @@
     "@deepseek-ai/dsh-web-app/./presets/ptc.patch.yml": "9e355c947bf61c3d2fe9bf3214b386f83c0d99d37579ce22576d4b82cb6e1a2c",
     "@deepseek-ai/dsh-web-app/./presets/minimal.patch.yml": "a2a9ba1c9c392a45466708f18bc0aefbf300577f9b544dc06049f73a8a5b3267",
     "@deepseek-ai/dsh-web-app/./presets/cordis.patch.yml": "01b0fc94fd49136b332254a7ae5658e43ffe646f7248047dba65d499cfc74596",
-    "workspace/pnpm-lock.yaml": "3d317560df047b54c1cf6765438e27724b6073a90fedbf6ca6fa48b65b66083f",
+    "workspace/pnpm-lock.yaml": "6d48bf3d9b908f540a6de56948ccc94758cb3e57c7825d99c50b2f9c69ce5e7d",
     "bridge/cordis.patch.yml": "490915fb2c1bca0b07317bd4c06a5a6d6c2be2ce01b9092f2696c3b23dc6aaa3"
   }
 }
