@@ -68,6 +68,7 @@ import { foldRequestHeader, interruptedTurnClosers, SessionLogOffset, SessionSeq
 import { z as zod } from "zod";
 
 import { inboxProjectionDefinition } from "./inbox.js";
+import { createSelectionSideChat } from "./side-chat.js";
 import { ZcodeLoopAgent } from "./agent.js";
 import type { ZcodeLoopAgentDeps } from "./agent.js";
 import { DshSessionEventStoreBridge } from "./bridges/event-store-bridge.js";
@@ -366,6 +367,25 @@ export class ZcodeLoop extends Service implements AgentFactory {
           if (!["pause", "resume", "status"].includes(action)) return { kind: "error", text: "Usage: /queue pause | resume | status" };
           if (action !== "status") agent.setQueuePaused(action === "pause");
           return { kind: "success", text: `Queue ${agent.queuePaused ? "paused" : "running"}: ${agent.inbox.nextTurn.length} turn input(s), ${agent.inbox.nextStep.length} step input(s).` };
+        },
+      });
+      commandCtx.commands.register({
+        name: "sidechat",
+        description: "Start an independent side-chat session from the completed turn prefix plus the selected text",
+        input: { hint: "selected text" },
+        handler: async ({ agent, rawInput, signal }) => {
+          signal.throwIfAborted();
+          const selection = rawInput.trim();
+          if (selection.length === 0) return { kind: "error", text: "Usage: /sidechat <selected text>" };
+          try {
+            const branch = await createSelectionSideChat(commandCtx, agent, selection, signal);
+            return {
+              kind: "success",
+              text: `Side chat ${branch.sessionId} created from parent ${agent.id} through event ${branch.boundary}.`,
+            };
+          } catch (error) {
+            return { kind: "error", text: error instanceof Error ? error.message : String(error) };
+          }
         },
       });
     });
