@@ -115,10 +115,26 @@ export interface Config {
   model: string;
   /** 声明给引擎的上下文窗口（透传 model-bridge）。 */
   contextWindow?: number;
-  /** 声明给引擎的最大输出 token（透传 model-bridge）。 */
+  /**
+   * 声明给引擎的最大输出 token 上限（Model.optionSpecs.maxOutputTokens.max）。
+   * 三层语义：本字段覆盖引擎 Model 声明（优先于 adapter defaultMaxTokens）；
+   * adapter defaultMaxTokens 仅在无本字段时充作声明上限；dsh
+   * `AgentOptions.maxTokens` 是逐请求上限，不混入声明。
+   */
   maxOutputTokens?: number;
   /** 逐字流式开关（默认开；false → 引擎走整段 generateText，无 live frame）。 */
   streaming?: boolean;
+  /**
+   * 引擎执行限制：单次 turn 内的模型步数上限。dsh AgentOptions 无对应物；
+   * vendored 引擎主循环不消费其原生字段（仅 subagent/memory 路径读取），由本
+   * 插件在准入层实施——超限的后续步按 pre-step 拒绝收口（turn blocked）。
+   */
+  maxTurns?: number;
+  /**
+   * 引擎工具调度并发上限（映射 AgentRuntimeConfig.toolConcurrency.maxConcurrency）。
+   * dsh 无对应物；只暴露引擎级旋钮，不参与工具独占/并行语义判断。
+   */
+  toolConcurrency?: number;
 }
 
 /** 写句柄 + 已落盘事件数（create/resume 共用的 stored 形状，stock 同名字段）。 */
@@ -179,6 +195,35 @@ function resolveReasoningLevel(
   // 档位 id 是 dsh ReasoningEffortId 品牌串；按 string 收纳便于与任意来路的 effort 比对。
   const effortIds: string[] = resolved?.reasoning?.efforts?.map((candidate) => candidate.id) ?? [];
   return effortIds.includes(effort) ? effort : undefined;
+}
+
+/**
+ * 装配期 dsh 路由元数据解析失败 → 延迟到首个模型请求抛出的明确错误。
+ *
+ * 与 stock loop 对齐：provider 无 adapter 时装配不阻塞，错误在首个请求的
+ * prepare/dispatch 处 surfaced。差异是 stock 不预先解析元数据；本插件需要它
+ * 生成引擎 Model 声明，因此不能像旧实现那样吞掉失败回落硬编码默认预算——
+ * 否则引擎会带着错误 contextWindow 深处失败。原始 code（如 NO_ADAPTER）保留
+ * 在 message 与 `code` 字段上，便于宿主与探针识别。
+ */
+function createModelResolutionError(provider: string, model: string, cause: unknown): Error {
+  const source = cause as { code?: unknown; failure?: { code?: unknown } } | null;
+  const code =
+    typeof source?.code === "string" && source.code.length > 0
+      ? source.code
+      : typeof source?.failure?.code === "string" && source.failure.code.length > 0
+        ? source.failure.code
+        : undefined;
+  const detail = cause instanceof Error ? cause.message : String(cause);
+  const error = new Error(
+    `cannot resolve model "${provider}/${model}" for a request: ${detail}${
+      code === undefined || detail.includes(code) ? "" : ` (${code})`
+    }`,
+    { cause: cause instanceof Error ? cause : undefined },
+  );
+  error.name = "ModelResolutionError";
+  if (code !== undefined) Object.assign(error, { code });
+  return error;
 }
 
 /**
@@ -263,6 +308,8 @@ export class ZcodeLoop extends Service implements AgentFactory {
     contextWindow: z.natural(),
     maxOutputTokens: z.natural(),
     streaming: z.boolean().default(true),
+    maxTurns: z.natural(),
+    toolConcurrency: z.natural(),
   }) as unknown as z<Config>;
 
   /**
@@ -560,16 +607,25 @@ export class ZcodeLoop extends Service implements AgentFactory {
       creationSignal.throwIfAborted();
       // ---- 路由（agentOptions 覆盖插件默认）----
       const agentOptions = input.agentOptions ?? {};
+      // dsh 公开契约：请求级上限必须是可精确落到 wire 的正整数（stock assertAgentOptions 同款）。
+      if (
+        agentOptions.maxTokens !== undefined &&
+        (!Number.isSafeInteger(agentOptions.maxTokens) || agentOptions.maxTokens <= 0)
+      ) {
+        throw new TypeError("agent maxTokens must be a positive safe integer");
+      }
       const provider = agentOptions.provider ?? this.config.provider;
       const model = agentOptions.model ?? this.config.model;
 
       // ---- dsh 路由真实元数据（引擎面 Model 声明的首选来源）----
-      // 查询失败不阻塞装配：桥内回落 config → 硬编码默认（docs/GAPS.md 取值链）。
+      // 查询失败不阻塞装配（stock 同样在装配期不解析元数据），但也不回落硬编码
+      // 默认预算：把失败延迟到首个模型请求抛出，保证错误来自真实 adapter 路由。
       let resolved: LlmResolvedModelInfo | undefined;
+      let modelResolutionFailure: Error | undefined;
       try {
         resolved = await awaitCreation(creationSignal, () => this.loopCtx.llm.resolveModelInfo(provider, model, creationSignal));
-      } catch {
-        resolved = undefined;
+      } catch (error) {
+        modelResolutionFailure = createModelResolutionError(provider, model, error);
       }
       creationSignal.throwIfAborted();
       // agentOptions.reasoningEffort → 引擎 selection 档位（仅在 dsh 目录档位表内，
@@ -609,6 +665,11 @@ export class ZcodeLoop extends Service implements AgentFactory {
         // 阶段 8b：drain 的 initiator 边界（goal 工具 authority 的
         // currentInitiator 校验；stock loop 的 withInitiator(kick) 同款）。
         runWithInitiator: (operation) => this.loopCtx.agents.withInitiator(agent, operation),
+        // 装配期元数据解析失败延迟到首个模型请求抛出（见 createModelResolutionError）。
+        ...(modelResolutionFailure === undefined ? {} : { modelResolutionFailure }),
+        // maxTurns 由桥准入层实施（vendored 引擎主循环不消费其原生字段，
+        // 仅 subagent/memory 路径读取）；语义=单 turn 内模型步数上限。
+        ...(this.config.maxTurns === undefined ? {} : { maxTurns: this.config.maxTurns }),
       };
       const agent = (created = new ZcodeLoopAgent(
         this.loopCtx,
@@ -690,6 +751,11 @@ export class ZcodeLoop extends Service implements AgentFactory {
           titleGeneration: { enabled: false },
           // 逐字流式（streaming=false → 引擎整段 generateText，无 model_streaming/live frame）。
           modelStreaming: this.config.streaming === false ? "off" : "on",
+          // 引擎执行限制（dsh 无对应物）：直接透传引擎原生 config 字段。
+          ...(this.config.maxTurns === undefined ? {} : { maxTurns: this.config.maxTurns }),
+          ...(this.config.toolConcurrency === undefined
+            ? {}
+            : { toolConcurrency: { maxConcurrency: this.config.toolConcurrency } }),
         },
         deps: {
           toolRegistry: toolBridge.registry,

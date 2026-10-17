@@ -292,10 +292,10 @@
     "src/index.ts:api.setSessionModelSelection:0": "c35aa1038042a08e1cbbe53efcc79c6f21871312bce3754469ccf54fda3a25d8",
     "src/agent.ts:api.steerTurn:0": "0295d68b4f62604407562e00487bbc2b685eb73ae9e67afd900210019c7c5e63",
     "src/agent.ts:api.steerTurn:1": "42c56348779bfdd43b1020a373146bb7a979846fb5720c6b1d01ccb18e6f5548",
-    "src/index.ts:assembly.createEmbeddedEngine:0": "35fe1b344d8fb6b457ef0b0f6fa01e4df95d82938eb9b301d6b46ea6989d9e05"
+    "src/index.ts:assembly.createEmbeddedEngine:0": "bc8b4723bf7377f68129fdec9eb2d72cb06e8439e1fb9c50fe9bdd5b9e917386"
   },
   "declarations": {
-    "src/agent.ts:ZcodeLoopAgentDeps": "086c52cb11ac43268f800fd9f6db4230bd4dc8f275d3b85dde7029f89c13aac5",
+    "src/agent.ts:ZcodeLoopAgentDeps": "2a5b0a2a33457d73f9b858ea2bd76131ec0bf3348f018fcf4ecfd0766d6a37b8",
     "src/agent.ts:Phase": "d35e27ede6400e33d01373715e17124cd48d6ce3f9db09c727d9738755ffe8ac",
     "src/bridges/event-store-bridge.ts:TurnStartedPayload": "6b0ff49175febca54fc473d63d143e2bea8970030f643e234cfee7d1c81d33fb",
     "src/bridges/event-store-bridge.ts:RequestMessageView": "a64e7c81197fcb875c3462aa01cc2a831c80543e840843611fc5c5b713501db8",
@@ -326,7 +326,7 @@
     "src/engine-facade.ts:ScriptedModelOptions": "235027db3303d3908476478c18767d438adf28c8f631feca1bbde10babce1c24",
     "src/engine-facade.ts:CreateEmbeddedEngineInput": "3168befa0552323f36246d71ee1a01a8cfbbe337345e6004813d806da061d77f",
     "src/inbox.ts:InboxLiveEvent": "ed00d30bc3f2c1f4170194515ebedc5e33d37edb89b9c8aed40779442a46980c",
-    "src/index.ts:Config": "4b6ff5b8a13ff95e23bea28b0cfbc64d14c49b968690b0046968195e8b6a1b00",
+    "src/index.ts:Config": "a2d4b4fdd7d37a9751d6598e6759fbb3d812e5cc3cf69596f86755982b4baf1a",
     "src/index.ts:StoredSession": "714cb63001f8d86696a8117b0d0233200c0c691cbc6dc09484da174407dce796",
     "src/index.ts:AssembleAgentInput": "ac74dd7b546fd3d22ac2d887c88d2d2cc02078ea9677549a3b891bb8be6bc075",
     "vendor/zcode/apps/zcode-cli/packages/core/src/agent/agent-listing-metadata.ts:AgentListingDelta": "769fc40682c4568dd2641d5803d4a76fa0493d63fe0ee0fdbd16c22e79cc18fb",
@@ -4281,7 +4281,7 @@
     "vendor/zcode/packages/zcode-cua/request-access-contract.d.ts:CuaRequestAccessStatusSchema": "9ec4a5801d05226ac9916cace7a241ee9a6a5b475cf90ead9783a7eafb03b838"
   },
   "implementations": {
-    "src/agent.ts": "97655d629e348af53cda7788aeb7773258b85d6f2f8906909f76ba32ea2b7aac",
+    "src/agent.ts": "a37462cf15f4cd7701cdd25e98f4805ebe4ca6ca50dc31528856327611fc7adb",
     "src/bridges/event-store-bridge.ts": "43fea90be3f3b75b767ab5ca8eb070764f91caeef1532ee8e3f98e91b10f24c6",
     "src/bridges/logger-adapter.ts": "852fec3b7728c256689e1bc23b50c5a2e705d1e5e15c22d79d16709eca8895bf",
     "src/bridges/model-bridge.ts": "f0f7428e90564e81d8058cf930743b76e878aa414785929d46869ea0d9088414",
@@ -4290,7 +4290,7 @@
     "src/bridges/tool-bridge.ts": "3ead0e1bd7bce57bda535243e2fcc31786e96e9fe34a7598031731f1c21863ed",
     "src/engine-facade.ts": "3f88fd85a6b539dc4c35eb86082949e7d5824e18133200547fca13bd63dbed02",
     "src/inbox.ts": "4441b5774c185c074bdf80fa4841ef19ee158c1e92aec6644101659181372e18",
-    "src/index.ts": "21ff0917526271b41531fdfb6d36e7502eefccbb3a463e40e33159310c44f2e0",
+    "src/index.ts": "abb3f13dad14aea234cefd40ef761fda4bbf5148e9f3939efed8572786a46095",
     "vendor/zcode/apps/zcode-cli/packages/core/src/agent/agent-listing-metadata.ts": "2191d23972ec0788988cfee12eb7555f0ae5e9f2e23fb7291bb7d6366210f567",
     "vendor/zcode/apps/zcode-cli/packages/core/src/agent/compact-session.ts": "bc73a627e0cb488a13e174fe7081619729f821b2ab544e9b96892656da18fcc4",
     "vendor/zcode/apps/zcode-cli/packages/core/src/agent/file-part-hydration.ts": "3e63971ae6a09cdbd7a1830bbd610faedbc153ad116aca24d9bd88e10df1f9bc",

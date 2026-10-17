@@ -26,6 +26,7 @@
     "verify:inbox-projection": "tsx scripts/inbox-projection-integration.ts",
     "verify:request-provenance": "tsx scripts/request-provenance-integration.ts",
     "verify:step-boundary": "tsx scripts/step-boundary-integration.ts",
+    "verify:model-config": "tsx scripts/model-config-integration.ts",
     "verify:history-compaction": "tsx scripts/history-compaction-integration.ts",
     "verify:crash-recovery": "tsx scripts/crash-recovery-integration.ts",
     "verify:agent-lifecycle": "tsx scripts/agent-lifecycle-integration.ts",

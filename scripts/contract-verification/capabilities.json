@@ -275,9 +275,33 @@
     },
     {
       "id": "runtime-policy-knobs",
-      "title": "循环和调度策略配置",
+      "title": "循环和调度策略配置（已暴露）",
+      "disposition": "bridged",
+      "reason": "maxTurns 由桥准入层实施（超限步按 pre-step 拒绝收口为 blocked；vendored 引擎主循环不消费其原生字段，透传仅供后续版本）并经探针验证；工具并发经 Config 透传 AgentRuntimeConfig.toolConcurrency；dsh AgentOptions 无对应物。",
+      "evidence": [
+        {
+          "file": "src/index.ts",
+          "needle": "maxTurns: this.config.maxTurns"
+        },
+        {
+          "file": "src/index.ts",
+          "needle": "toolConcurrency: { maxConcurrency: this.config.toolConcurrency }"
+        },
+        {
+          "file": "src/agent.ts",
+          "needle": "DSH_STEP_LIMIT"
+        }
+      ],
+      "members": [
+        "config.maxTurns",
+        "config.toolConcurrency"
+      ]
+    },
+    {
+      "id": "runtime-policy-knobs-unexposed",
+      "title": "其余循环和调度策略配置",
       "disposition": "not-integrated",
-      "reason": "这些引擎配置未通过插件 Config 或宿主命令暴露；引擎默认运行并不能算作可配置入口。",
+      "reason": "streamingToolExecution、modelContextBudgetStrategy 与 modelAnomalyGuard 未通过插件 Config 暴露；引擎默认运行不算可配置入口。",
       "evidence": [
         {
           "file": "src/index.ts",
@@ -285,8 +309,6 @@
         }
       ],
       "members": [
-        "config.maxTurns",
-        "config.toolConcurrency",
         "config.streamingToolExecution",
         "config.modelContextBudgetStrategy",
         "config.modelAnomalyGuard"

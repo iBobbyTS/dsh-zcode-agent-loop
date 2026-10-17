@@ -16,7 +16,7 @@ import type {
   PreStepDecision,
 } from "@deepseek-ai/dsh-agent";
 import { agentEvents } from "@deepseek-ai/dsh-agent";
-import { LlmError, markAgentLoopRequest } from "@deepseek-ai/dsh-llm";
+import { LlmError, errorChain, markAgentLoopRequest } from "@deepseek-ai/dsh-llm";
 import type { GenerateOptions, LlmCallConfig, PreparedLlmCall, StreamChunk } from "@deepseek-ai/dsh-llm";
 import { createScope } from "@deepseek-ai/dsh-scope";
 import type { Scope } from "@deepseek-ai/dsh-scope";
@@ -55,6 +55,17 @@ export interface ZcodeLoopAgentDeps {
    * （host probe 无 goal 插件场景不受影响）。
    */
   runWithInitiator?: (operation: () => Promise<void>) => Promise<void>;
+  /**
+   * 装配期 dsh 路由元数据解析失败的明确错误。装配不阻塞（stock 同款），在首个
+   * 模型请求处抛出，禁止带着硬编码默认预算发请求。
+   */
+  modelResolutionFailure?: Error;
+  /**
+   * 单 turn 内模型步数上限，桥准入层实施。vendored 引擎主循环不消费
+   * `AgentRuntimeConfig.maxTurns`（仅 subagent/memory 路径读取），所以不能只靠
+   * 引擎透传；超限的后续步按 pre-step 拒绝收口（blocked，不发 agent/error）。
+   */
+  maxTurns?: number;
 }
 
 type Phase = { kind: "idle" | "running" | "maintenance" };
@@ -414,7 +425,9 @@ export class ZcodeLoopAgent implements Agent {
           // driver；排队输入保持 pending，等待新输入唤醒。
           this.deps.eventBridge?.endHostTurn(controller.signal.aborted
             ? { kind: "aborted", reason: { ...(controller.signal.reason as AgentCancelCause) } }
-            : { kind: "error", error: { code: "UNKNOWN", message: error instanceof Error ? error.message : String(error) } });
+            // stock 同款：非 LlmError 一律 flatten cause 链到 UNKNOWN，避免 durable
+            // turn/end 只剩引擎包装文案（如 "Turn execution failed"）而丢失 adapter 根因。
+            : { kind: "error", error: { code: "UNKNOWN", message: errorChain(error) } });
           this.dispatch.emit("agent/error", { turn, step: 0, error });
           break;
         } finally {
@@ -449,6 +462,14 @@ export class ZcodeLoopAgent implements Agent {
     if (position.step === 1) return; // The first batch is admitted by drain before executeTurn.
     const signal = this.currentTurnAbort!.signal;
     signal.throwIfAborted();
+    // maxTurns 桥层实施：超限的后续步按 pre-step 拒绝收口（blocked），不发
+    // agent/error——与 stock 第二步拒绝同族语义；引擎原生字段主循环不消费。
+    const limit = this.deps.maxTurns;
+    if (limit !== undefined && position.step > limit) {
+      this.deps.eventBridge?.setTurnEndReason({ kind: "blocked" });
+      throw markStepRejection(createExternalTurnFaultError("DSH_STEP_LIMIT",
+        `agent "${this.id}" reached the maxTurns limit of ${limit} model step(s) in this turn`));
+    }
     const messages = this.inbox.claim("next-step", position.turn);
     const decision = await this.admitStep(messages, position, signal);
     signal.throwIfAborted();
@@ -480,8 +501,22 @@ export class ZcodeLoopAgent implements Agent {
     this.admittedMessages = [];
   }
 
+  /**
+   * dsh `AgentOptions.maxTokens` 是逐请求输出上限：在 agent/request waterfall
+   * （含宿主改写）之后仍按 min(引擎请求预算, 上限) 收口，显式值不会抬高引擎
+   * 按真实窗口声明/收缩的预算；未设置时保持引擎预算原样。
+   */
+  private capRequestMaxTokens(config: LlmCallConfig): LlmCallConfig {
+    const cap = this.options.maxTokens;
+    if (cap === undefined || (config.maxTokens !== undefined && config.maxTokens <= cap)) return config;
+    return Object.freeze({ ...config, maxTokens: cap });
+  }
+
   /** The dsh waterfall owns route changes and request-error recovery. */
   async *streamModelRequest(proposal: GenerateOptions, engineRequest: ModelRequest): AsyncIterable<StreamChunk> {
+    // 装配期元数据解析失败（如 provider 无 adapter）在首个模型请求处显式抛出，
+    // 不产生静默默认预算请求；路径与 stock 的延迟 NO_ADAPTER 失败一致。
+    if (this.deps.modelResolutionFailure !== undefined) throw this.deps.modelResolutionFailure;
     const signal = this.currentTurnAbort!.signal;
     const position = this.deps.eventBridge!.requestPosition;
     let config: LlmCallConfig = {
@@ -493,6 +528,8 @@ export class ZcodeLoopAgent implements Agent {
       signal.throwIfAborted();
       config = await this.dispatch.waterfall("agent/request", { ...position, signal }, () => Promise.resolve(Object.freeze({ ...config })));
       signal.throwIfAborted();
+      // 宿主改写之后仍受 dsh 请求级上限约束（见 capRequestMaxTokens）。
+      config = this.capRequestMaxTokens(config);
       const prepared: PreparedLlmCall = await this.ctx.llm.prepareCall(config, signal);
       signal.throwIfAborted();
       this.deps.toolBridge.syncTools();

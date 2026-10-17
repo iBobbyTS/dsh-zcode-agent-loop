@@ -99,7 +99,11 @@ export interface DshModelBridgeOptions {
   streamRequest?: (request: GenerateOptions, engineRequest: ModelRequest) => AsyncIterable<StreamChunk>;
   /** 声明给引擎的上下文窗口（进入 `Model.properties.contextWindow`）。 */
   contextWindow?: number;
-  /** 声明给引擎的最大输出 token（进入 `Model.optionSpecs.maxOutputTokens.max`）。 */
+  /**
+   * 声明给引擎的最大输出 token 上限（进入 `Model.optionSpecs.maxOutputTokens.max`）。
+   * 取值链：本字段 > resolved.defaultMaxTokens > 硬编码默认；它是引擎预算声明，
+   * 不是 dsh 逐请求 `AgentOptions.maxTokens`（后者由 agent 在 waterfall 后钳制）。
+   */
   maxOutputTokens?: number;
 }
 
@@ -151,8 +155,10 @@ interface BridgeModelDeclaration {
 }
 
 /**
- * 由 dsh 路由元数据计算 Model 声明：显式 config 字段（装配期固定）优先于 resolved，
- * resolved 缺席回落硬编码默认；reasoning 档位目录来自 resolved.reasoning.efforts。
+ * 由 dsh 路由元数据计算 Model 声明：显式 config 字段（装配期固定）优先于
+ * resolved.defaultMaxTokens，resolved 缺席才回落硬编码默认；reasoning 档位
+ * 目录来自 resolved.reasoning.efforts。声明值是引擎预算上限/默认来源，
+ * 与 dsh 请求级 maxTokens 是两层（见 DshModelBridgeOptions.maxOutputTokens）。
  */
 function bridgeModelDeclaration(
   resolved: LlmResolvedModelInfo | undefined,
