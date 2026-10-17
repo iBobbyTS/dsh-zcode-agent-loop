@@ -5,7 +5,7 @@
  * `ToolRegistry`，让嵌入引擎"看见"并"调用" dsh 工具：
  *
  * - schema 同步（每 turn 前由外壳调用 {@link DshToolBridge.syncTools}）：
- *   `ctx.tools.schemas()`（name/description/parameters 的 JSON Schema 投影）
+ *   `ctx.tools.schemas(agent)`（name/description/parameters 的 JSON Schema 投影）
  *   → ZCode `ToolEntry`（capability/inputSchema/metadata 等必填字段按引擎实测
  *   形状补齐；元数据映射 `isConcurrencySafe` → `concurrentSafe`）。
  * - 执行（不变量"工具执行必须过 dsh 管线"）：ToolEntry.handler **不实现工具**，
@@ -30,7 +30,7 @@ import type { JsonSchema, ToolEntry, ToolExecutionContext, ToolRegistry } from "
 export interface DshToolBridgeOptions {
   /** 挂载了 ToolRuntime（`ctx.tools`）的 Cordis context。 */
   ctx: Context;
-  /** 解析当前代理（进入 dsh 执行输入的 `agent`，供 scope 过滤/审计）。 */
+  /** 延迟解析本桥所属代理，统一 schemas/get/execute 的显式 scope key。 */
   agent?: () => Agent | undefined;
   /** 复用既有 registry（缺省新建；引擎侧 built-in 工具也会注册进来）。 */
   registry?: ToolRegistry;
@@ -51,14 +51,14 @@ interface DshToolDefinitionView {
   isConcurrencySafe?: (args: unknown) => boolean;
 }
 
-function dshDefinitionView(ctx: Context, name: string): DshToolDefinitionView | undefined {
-  const definition = ctx.tools.get(name) as DshToolDefinitionView | undefined;
+function dshDefinitionView(ctx: Context, name: string, agent?: Agent): DshToolDefinitionView | undefined {
+  const definition = ctx.tools.get(name, agent) as DshToolDefinitionView | undefined;
   return definition ?? undefined;
 }
 
 /** 注册期并发分类：`isConcurrencySafe` 探测（异常/缺席按独占处理，fail-closed）。 */
-function classifyConcurrentSafe(ctx: Context, name: string): boolean {
-  const definition = dshDefinitionView(ctx, name);
+function classifyConcurrentSafe(ctx: Context, name: string, agent?: Agent): boolean {
+  const definition = dshDefinitionView(ctx, name, agent);
   if (definition?.isConcurrencySafe === undefined) return false;
   try {
     return definition.isConcurrencySafe(undefined) === true;
@@ -79,7 +79,7 @@ function normalizeInputSchema(parameters: ToolSchema["parameters"]): JsonSchema 
 export interface DshToolBridge {
   /** ZCode 侧 registry（喂给 `AgentRuntimeDeps.toolRegistry`）。 */
   registry: ToolRegistry;
-  /** 每 turn 前把 `ctx.tools.schemas()` 同步进 registry（增量 upsert + 撤销消失项）。 */
+  /** 每 turn 前把所属 agent 可见工具同步进 registry（增量 upsert + 撤销消失项）。 */
   syncTools(): ToolSyncResult;
   /** 当前已同步的 dsh 工具名（诊断用）。 */
   syncedToolNames(): string[];
@@ -92,7 +92,7 @@ export function createDshToolBridge(options: DshToolBridgeOptions): DshToolBridg
   const registry = options.registry ?? createToolRegistry();
   const synced = new Map<string, ToolEntry>();
 
-  const entryFor = (schema: ToolSchema): ToolEntry => {
+  const entryFor = (schema: ToolSchema, agent: Agent | undefined): ToolEntry => {
     const name = schema.name;
     const entry: ToolEntry = {
       capability: `dsh.tool.${name}`,
@@ -127,7 +127,7 @@ export function createDshToolBridge(options: DshToolBridgeOptions): DshToolBridg
         readOnly: false,
         destructive: false,
         // 元数据映射（任务指定）：dsh isConcurrencySafe → ZCode concurrentSafe。
-        concurrentSafe: classifyConcurrentSafe(options.ctx, name),
+        concurrentSafe: classifyConcurrentSafe(options.ctx, name, agent),
         needsApproval: false,
         riskLevel: "low",
         sideEffectScope: "none",
@@ -142,11 +142,15 @@ export function createDshToolBridge(options: DshToolBridgeOptions): DshToolBridg
     registry,
     syncTools(): ToolSyncResult {
       const result: ToolSyncResult = { registered: [], refreshed: [], unregistered: [] };
-      const schemas = options.ctx.tools.schemas();
+      // ToolRuntime 注册时从 ctx 取 scope，但读取时要求显式传 agent；即使用
+      // agent.ctx 调 schemas() 也只得到全局工具。每 turn 重新解析以容纳 preset
+      // 在 agent 创建/enter 后绑定，以及后续 scope 工具增删。
+      const agent = options.agent?.();
+      const schemas = options.ctx.tools.schemas(agent);
       const liveNames = new Set(schemas.map((schema) => schema.name));
       for (const schema of schemas) {
         const previous = synced.get(schema.name);
-        const entry = entryFor(schema);
+        const entry = entryFor(schema, agent);
         registry.register(entry, { silentDuplicateWarning: true });
         synced.set(schema.name, entry);
         if (previous === undefined) result.registered.push(schema.name);

@@ -63,3 +63,11 @@ The raw order is still behavior: ZCode claims next-turn inbox before `turn/start
 The scripted goal adapter chooses its closing answer by request count (`scripts/contract-verification/fixture.ts:113`), so passing the fixture does not establish that the model received the missing closing instruction. New tests for later repairs must assert that actual request input and durable source, not only the resulting answer.
 
 No original member establishes a rewind/checkpoint/rollback/memory gap or requires a new dsh plugin. Those broader capabilities remain outside these three fixtures. No runtime repair, production allowance, fixture change or equivalence approval is part of this classification stage.
+
+## Additional live-preset gap: agent-scoped tool visibility
+
+The real Standard-preset web check exposed a separate gap absent from the original global-tool fixtures: the model saw only the globally registered `working_directory`, despite preset tools being registered in its agent scope. This does not change the original289 ledger or any of its classifications.
+
+In the pinned dsh runtime, `tools.register()` derives ownership from its calling context, while `tools.schemas(scope)` and `tools.get(name, scope)` require an explicit agent key. Calling `agent.ctx.tools.schemas()` without that argument still returns the global view. The bridge now resolves its owning agent lazily and supplies the same scope key for schemas, definition metadata and execution. The existing per-turn registry synchronization also invalidates the engine's tool-contract cache so additions/removals reach the next model request.
+
+`pnpm verify:preset-tools` registers a tool through a real `agent.ctx` after creation/enter. Before the repair, its first provider request omitted that scoped tool while the global control remained present. After repair, it verifies the first request, handler execution through a scoped dsh pipeline listener, matching agent/initiator, scoped concurrency metadata, sibling/root isolation, and scoped add/remove across later turns. `pnpm typecheck`, `pnpm verify:goal-chain` and `pnpm verify:pipeline` also pass. Real web/preset acceptance is a separate delivery check; these results do not establish deferred-context, multi-tool assistant-surface, finish, request-header or inbox fidelity.

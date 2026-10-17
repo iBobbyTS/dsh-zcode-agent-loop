@@ -288,8 +288,10 @@ export class ZcodeLoopAgent implements Agent {
         // 阶段 8a：claim 的原始消息批交给事件桥——model_request 落盘时逐条
         // append 原消息对象（producer source 保真）；turn 收口由桥自清。
         this.deps.eventBridge?.setPendingUserMessages(batch);
-        // 任务合同：每 turn 前把 ctx.tools 的 schemas 同步进 ZCode registry。
+        // 每 turn 同步 agent 可见工具；引擎另缓存模型 contract，须一起失效，
+        // 否则后续 preset 工具增删虽已更新 registry，模型仍收到上一轮工具表。
         this.deps.toolBridge.syncTools();
+        this.deps.runtime?.invalidateToolCache();
         const input = batch.map(userMessageText).join("\n\n");
         const controller = new AbortController();
         this.currentTurnAbort = controller;

@@ -484,8 +484,8 @@ export class ZcodeLoop extends Service implements AgentFactory {
       const eventBridge = new DshSessionEventStoreBridge({ session, sessionId, logger: dshLogger });
       const toolBridge = createDshToolBridge({
         ctx: this.loopCtx,
-        // 工具执行期解析在册 agent（进入 dsh 执行输入的 agent 字段）。
-        agent: () => this.loopCtx.agents.get(input.sessionId),
+        // 桥先于 agent 构造；延迟解析本实例，供 schema/metadata/执行共享 scope。
+        agent: () => agent,
       });
       // 生效路由写回 agentOptions：agent.options 的 provider/model 是 persona 段
       // prompt 变量（{{provider}}/{{model}}，web 模板自带 personaPrefix 引用）与
