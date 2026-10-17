@@ -109,10 +109,18 @@ export class ZcodeLoopInbox implements Inbox {
    * 取走也落 splice（不带 canceled outcome——被消费不是被取消）。
    */
   claim(target: InboxTarget, turn: number): UserMessage[] {
-    const claimed = this.apply("next-step", 0, this.current()["next-step"].length, [], false, turn);
-    if (target === "next-turn") {
-      claimed.push(...this.apply("next-turn", 0, 1, [], false, turn));
-    }
+    const nextStep = this.normalize("next-step", 0, this.current()["next-step"].length, [], false);
+    const nextTurn = target === "next-turn"
+      ? this.normalize("next-turn", 0, 1, [], false)
+      : undefined;
+    if (nextStep === undefined && nextTurn === undefined) return [];
+    // 两个 splice 先对同一候选状态一起校验再落盘：任一批非法时不得吞掉另一批。
+    let candidate = this.current();
+    if (nextStep !== undefined) candidate = foldInboxSplice(candidate, nextStep);
+    if (nextTurn !== undefined) candidate = foldInboxSplice(candidate, nextTurn);
+    const claimed: UserMessage[] = [];
+    if (nextStep !== undefined) claimed.push(...this.commitSplice(nextStep, false, turn));
+    if (nextTurn !== undefined) claimed.push(...this.commitSplice(nextTurn, false, turn));
     return claimed;
   }
 
@@ -190,6 +198,19 @@ export class ZcodeLoopInbox implements Inbox {
     discardRemoved: boolean,
     turn: number,
   ): UserMessage[] {
+    const splice = this.normalize(target, start, deleteCount, inserted, discardRemoved);
+    if (splice === undefined) return [];
+    return this.commitSplice(splice, discardRemoved, turn);
+  }
+
+  /** 归一化一次 splice；空操作返回 undefined（不落盘、不发 live 事件）。 */
+  private normalize(
+    target: InboxTarget,
+    start: number,
+    deleteCount: number,
+    inserted: UserMessage[],
+    discardRemoved: boolean,
+  ): SessionEventMap["agent/inbox/spliced"] | undefined {
     const inbox = this.current()[target];
     const truncatedStart = Math.trunc(start);
     const offset = Number.isNaN(truncatedStart) ? 0 : truncatedStart;
@@ -201,19 +222,28 @@ export class ZcodeLoopInbox implements Inbox {
       Math.max(Number.isNaN(truncatedDeleteCount) ? 0 : truncatedDeleteCount, 0),
       inbox.length - actualStart,
     );
-    if (actualDeleteCount === 0 && inserted.length === 0) return [];
+    if (actualDeleteCount === 0 && inserted.length === 0) return undefined;
     const outcome = discardRemoved && actualDeleteCount > 0 ? ("canceled" as const) : undefined;
-    const splice: SessionEventMap["agent/inbox/spliced"] = {
+    return {
       target,
       start: actualStart,
       ...(actualDeleteCount === 0 ? {} : { removedCount: actualDeleteCount }),
       inserted,
       ...(outcome === undefined ? {} : { outcome }),
     };
+  }
+
+  /** 校验并持久化已归一化的 splice，随后发布 live 事件。 */
+  private commitSplice(
+    splice: SessionEventMap["agent/inbox/spliced"],
+    discardRemoved: boolean,
+    turn: number,
+  ): UserMessage[] {
+    const inbox = this.current()[splice.target];
     foldInboxSplice(this.current(), splice); // Reject duplicate commands before persisting.
     const event = this.session.append("agent/inbox/spliced", splice);
     this.current();
-    const removed = inbox.slice(actualStart, actualStart + actualDeleteCount);
+    const removed = inbox.slice(splice.start, splice.start + (splice.removedCount ?? 0));
     for (const message of removed) {
       if (discardRemoved) this.emitLive?.("agent/inbox/discarded", { message });
       else this.emitLive?.("agent/inbox/claimed", { message, turn });

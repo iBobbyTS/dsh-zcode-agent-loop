@@ -46,6 +46,7 @@
  */
 import { Service } from "@deepseek-ai/cordis";
 import type { Context } from "@deepseek-ai/cordis";
+import type {} from "@deepseek-ai/dsh-commands";
 import z from "@deepseek-ai/schemastery";
 import type {
   Agent,
@@ -132,6 +133,7 @@ interface StoredSession {
  * `handle.header` 快照充位（stock resumeWith 同构）。
  */
 interface AssembleAgentInput {
+  signal?: AbortSignal;
   /** dsh 侧 agent/session 身份（create=新建 id；resume=persisted id）。 */
   sessionId: DshSessionId;
   /** 会话元数据（workingDirectory 消费 `meta.cwd`；resume 时来自存储 header）。 */
@@ -145,6 +147,21 @@ interface AssembleAgentInput {
    * dsh 层 `sessions.prepare` 的 seed 重放不变。
    */
   seed?: CreateAgentOptions["seed"];
+}
+
+/** Cancel creation waits; a write handle arriving after cancellation is still released. */
+async function awaitCreation<T>(signal: AbortSignal, operation: () => Promise<T>, releaseLate?: (value: T) => Promise<void>): Promise<T> {
+  const abortError = () => signal.reason instanceof Error ? signal.reason : new Error("Agent creation cancelled", { cause: signal.reason });
+  if (signal.aborted) throw abortError();
+  const aborted = Promise.withResolvers<never>();
+  const listener = () => aborted.reject(abortError());
+  signal.addEventListener("abort", listener, { once: true });
+  const pending = Promise.resolve().then(() => { if (signal.aborted) throw abortError(); return operation(); });
+  try { return await Promise.race([pending, aborted.promise]); }
+  catch (error) {
+    if (signal.aborted && releaseLate) void pending.then(releaseLate, () => {}).catch(failure => console.error("Late session handle cleanup failed", failure));
+    throw error;
+  } finally { signal.removeEventListener("abort", listener); }
 }
 
 /**
@@ -260,10 +277,21 @@ export class ZcodeLoop extends Service implements AgentFactory {
    * 字段名保存。
    */
   private readonly loopCtx: Context;
+  private readonly liveTeardowns = new Set<() => Promise<void>>();
+  private readonly factoryAbort = new AbortController();
+  private readonly pendingCreations = new Set<Promise<void>>();
 
   constructor(ctx: Context, public readonly config: Config) {
     super(ctx, "zcodeLoop");
     this.loopCtx = ctx;
+    const live = this.liveTeardowns;
+    const factoryAbort = this.factoryAbort, pending = this.pendingCreations;
+    ctx.effect(() => async () => {
+      factoryAbort.abort(new Error("ZCode loop is not active"));
+      const settled = await Promise.allSettled([...pending, ...[...live].map(dispose => dispose())]);
+      const failures = settled.flatMap(result => result.status === "rejected" ? [result.reason] : []);
+      if (failures.length) throw new AggregateError(failures, "Agent factory teardown failed");
+    }, "zcodeLoop.liveAgents()");
     ctx.effect(() => ctx.agents.setFactory(this), "zcodeLoop.setFactory()");
     // 与 stock AgentLoop 相同的两个 prompt 变量（persona 段可能引用）。
     ctx.systemPrompt.variable("provider", (context) => context.agent?.options.provider);
@@ -279,9 +307,48 @@ export class ZcodeLoop extends Service implements AgentFactory {
       projections?.register(turnBoundaryProjectionDefinition);
       projections?.register(inboxProjectionDefinition);
     });
+    ctx.inject(["commands"], commandCtx => {
+      commandCtx.commands.register({
+        name: "queue",
+        description: "Pause or resume queued turns; the current turn keeps running",
+        input: { hint: "pause | resume | status" },
+        handler: async ({ agent, rawInput, signal }) => {
+          signal.throwIfAborted();
+          if (!(agent instanceof ZcodeLoopAgent)) return { kind: "error", text: "Queue control requires a ZCode loop agent." };
+          const action = rawInput.trim() || "status";
+          if (!["pause", "resume", "status"].includes(action)) return { kind: "error", text: "Usage: /queue pause | resume | status" };
+          if (action !== "status") agent.setQueuePaused(action === "pause");
+          return { kind: "success", text: `Queue ${agent.queuePaused ? "paused" : "running"}: ${agent.inbox.nextTurn.length} turn input(s), ${agent.inbox.nextStep.length} step input(s).` };
+        },
+      });
+    });
+  }
+
+  private async duringCreation(ownerCtx: Context, callerSignal: AbortSignal | undefined, operation: (signal: AbortSignal) => Promise<AgentHandle>): Promise<AgentHandle> {
+    ownerCtx.fiber.assertActive();
+    const ownerAbort = new AbortController();
+    const signal = AbortSignal.any([ownerAbort.signal, this.factoryAbort.signal, ...(callerSignal ? [callerSignal] : [])]);
+    signal.throwIfAborted();
+    let job: Promise<AgentHandle> | undefined, completed = false;
+    const untrackOwner = ownerCtx.effect(() => async () => {
+      if (!completed) { ownerAbort.abort(new Error("Agent creation owner disposed")); await job?.then(() => {}, () => {}); }
+    }, "zcodeLoop.creation()");
+    let tracked: Promise<void> | undefined;
+    try {
+      job = operation(signal); tracked = job.then(() => {}, () => {}); this.pendingCreations.add(tracked);
+      return await job;
+    } finally {
+      completed = true;
+      if (tracked) this.pendingCreations.delete(tracked);
+      await untrackOwner();
+    }
   }
 
   async createAgent(ownerCtx: Context, options: CreateAgentOptions): Promise<AgentHandle> {
+    return this.duringCreation(ownerCtx, options.signal, signal => this.createAgentNow(ownerCtx, { ...options, signal }));
+  }
+
+  private async createAgentNow(ownerCtx: Context, options: CreateAgentOptions): Promise<AgentHandle> {
     // ownership 断言对齐 stock（createAgent 的 this 被重绑为调用方 receiver，
     // 服务访问一律走 this.loopCtx —— 见 loopCtx 字段注释）。
     ownerCtx.fiber.assertActive();
@@ -304,11 +371,12 @@ export class ZcodeLoop extends Service implements AgentFactory {
       persistence === undefined
         ? undefined
         : {
-            handle: await persistence.create(session.header, {
+            handle: await awaitCreation(options.signal!, () => persistence.create(session.header, {
               ...(options.inheritedEventCount === undefined
                 ? {}
                 : { inheritedEventCount: options.inheritedEventCount }),
-            }),
+              signal: options.signal,
+            }), handle => handle.close()),
             storedCount: 0,
           };
     return await this.assembleAndPublish(
@@ -322,12 +390,17 @@ export class ZcodeLoop extends Service implements AgentFactory {
         agentOptions: options.agentOptions,
         setup: options.setup,
         seed: options.seed,
+        signal: options.signal,
       },
       "startup",
     );
   }
 
   async resume(ownerCtx: Context, options: ResumeAgentOptions): Promise<AgentHandle> {
+    return this.duringCreation(ownerCtx, options.signal, signal => this.resumeNow(ownerCtx, { ...options, signal }));
+  }
+
+  private async resumeNow(ownerCtx: Context, options: ResumeAgentOptions): Promise<AgentHandle> {
     // ownership 断言对齐 createAgent；服务访问一律走 this.loopCtx（见 loopCtx 注释）。
     ownerCtx.fiber.assertActive();
     // stock resume 同款文案：无 persistence 后端时 resume 无法进行。
@@ -342,13 +415,14 @@ export class ZcodeLoop extends Service implements AgentFactory {
     // 的 handle/owned 所有权交接语义）；成功路径 handle 归 agent 生命周期所有。
     let handle: SessionHandle | undefined;
     try {
-      handle = await persistence.open(id, "write", {
+      handle = await awaitCreation(options.signal!, () => persistence.open(id, "write", {
         ...(options.signal === undefined ? {} : { signal: options.signal }),
-      });
+      }), late => late.close());
       // 冷读：valid contiguous 前缀（torn tail 由后端截掉），含 fork 继承前缀。
-      const coldRead = await handle.read(0, undefined, {
+      const ownedHandle = handle;
+      const coldRead = await awaitCreation(options.signal!, () => ownedHandle.read(0, undefined, {
         ...(options.signal === undefined ? {} : { signal: options.signal }),
-      });
+      }));
       const persisted = coldRead.events;
       // 中断收尾（@deepseek-ai/dsh-session 导出）：为未决 tool/call 合成 error
       // result、补 step/end 与 turn/end{interrupted}，先补写进存储再 seed。
@@ -381,6 +455,7 @@ export class ZcodeLoop extends Service implements AgentFactory {
           parentAgent: options.parentAgent,
           agentOptions: options.agentOptions,
           setup: options.setup,
+          signal: options.signal,
         },
         "resume",
       );
@@ -456,7 +531,33 @@ export class ZcodeLoop extends Service implements AgentFactory {
     source: "startup" | "resume",
   ): Promise<AgentHandle> {
     let created: ZcodeLoopAgent | undefined;
+    let offModelSelection: (() => void) | undefined;
+    let detachSession: (() => void) | undefined;
+    let detachAgent: (() => void) | undefined;
+    let teardownPromise: Promise<void> | undefined;
+    let unfollowOwner: (() => void | Promise<void>) | undefined;
+    let unfollowScope: (() => void | Promise<void>) | undefined;
+    const creationAbort = new AbortController();
+    const creationSignal = AbortSignal.any([creationAbort.signal, ...(input.signal ? [input.signal] : [])]);
+    let publication: Promise<void> | undefined;
+    const teardown = (): Promise<void> => teardownPromise ??= (async () => {
+      creationAbort.abort(new Error("Agent lifecycle disposed"));
+      if (publication) await publication.catch(() => {});
+      const failures: unknown[] = [];
+      for (const dispose of [() => created?.dispose(), () => offModelSelection?.(), () => detachAgent?.(),
+        () => detachSession?.(), () => stored?.handle.close()]) {
+        try { await dispose(); } catch (failure) { failures.push(failure); }
+      }
+      this.liveTeardowns.delete(dispose);
+      if (failures.length) throw new AggregateError(failures, "ZCode agent teardown failed");
+    })();
+    const dispose = async (): Promise<void> => {
+      try { await teardown(); }
+      finally { await Promise.all([unfollowOwner?.(), unfollowScope?.()]); }
+    };
+    this.liveTeardowns.add(dispose);
     try {
+      creationSignal.throwIfAborted();
       // ---- 路由（agentOptions 覆盖插件默认）----
       const agentOptions = input.agentOptions ?? {};
       const provider = agentOptions.provider ?? this.config.provider;
@@ -466,10 +567,11 @@ export class ZcodeLoop extends Service implements AgentFactory {
       // 查询失败不阻塞装配：桥内回落 config → 硬编码默认（docs/GAPS.md 取值链）。
       let resolved: LlmResolvedModelInfo | undefined;
       try {
-        resolved = await this.loopCtx.llm.resolveModelInfo(provider, model);
+        resolved = await awaitCreation(creationSignal, () => this.loopCtx.llm.resolveModelInfo(provider, model, creationSignal));
       } catch {
         resolved = undefined;
       }
+      creationSignal.throwIfAborted();
       // agentOptions.reasoningEffort → 引擎 selection 档位（仅在 dsh 目录档位表内，
       // 见 resolveReasoningLevel；阶段 4 起与 model/selection 监听器共用）。
       const reasoningLevel = resolveReasoningLevel(resolved, agentOptions.reasoningEffort);
@@ -515,7 +617,16 @@ export class ZcodeLoop extends Service implements AgentFactory {
         session,
         agentDeps,
       ));
-      const promptAssembly = await assembleDshSystemPrompt(this.loopCtx, agent);
+      // Exact disposers are yielded so Cordis does not release the agent scope
+      // concurrently with its still-running model/tool driver.
+      unfollowScope = this.loopCtx.effect(function* () {
+        yield agent.scopeDisposer();
+        yield () => teardown();
+      }, `zcodeLoop.scope(${agent.id})`);
+      unfollowOwner = _ownerCtx.effect(function* () {
+        yield () => teardown();
+      }, `zcodeLoop.owner(${agent.id})`);
+      const promptAssembly = await awaitCreation(creationSignal, () => assembleDshSystemPrompt(this.loopCtx, agent, creationSignal));
 
       // ---- resume/fork-seed 冷路径附件（纯新建且无 seed 历史时本段整体缺席）----
       // 逆向翻译只读 session log（此刻 seed 已被 prepare 重放进 session），哑
@@ -610,7 +721,7 @@ export class ZcodeLoop extends Service implements AgentFactory {
       // 应用异步跑且错误吞掉打日志（applyModelSelection）。event.type 的
       // `model/selection` 词表项由 api-session-controller 声明（不在本插件依赖
       // 集），按 string 比对。
-      const offModelSelection = this.loopCtx.on("session/event" as never, ((subject: unknown, event: { type: string; data: unknown }) => {
+      offModelSelection = this.loopCtx.on("session/event" as never, ((subject: unknown, event: { type: string; data: unknown }) => {
         if (subject !== session || event.type !== "model/selection") return;
         void this.applyModelSelection(
           runtime,
@@ -628,12 +739,14 @@ export class ZcodeLoop extends Service implements AgentFactory {
       // 引擎内部完成 ensureContextInitialized → 历史 hydration → session_resumed
       // 事件（桥按 drop 计数）。之后首个 executeTurn 才把新 turn 落在历史之后。
       if (resumeContext !== undefined) {
-        await runtime.resumeFromStore({ persistedMessages: resumeContext.messages });
+        await awaitCreation(creationSignal, () => runtime.resumeFromStore({ persistedMessages: resumeContext.messages, abortSignal: creationSignal }));
       }
 
       // ---- Agent + 发布（setup 在发布前跑，对齐 stock 的事务顺序）----
-      const setupCommit = await input.setup?.(agent.ctx, agent);
+      const setupCommit = await awaitCreation(creationSignal, async () => input.setup?.(agent.ctx, agent));
+      creationSignal.throwIfAborted();
       setupCommit?.commit();
+      creationSignal.throwIfAborted();
 
       // ---- 发布事务（stock publish 顺序）：补存 setup 窗口事件（不经 live 路由）
       // → session enter → agent enter → announce → announce('startup'|'resume') ----
@@ -645,28 +758,25 @@ export class ZcodeLoop extends Service implements AgentFactory {
         if (suffix.length > 0) await stored.handle.append(suffix);
         stored.storedCount += suffix.length;
       }
-      const detachSession = this.loopCtx.sessions.enter(session);
-      const detachAgent = this.loopCtx.agents.enter(agent, input.parentAgent);
+      creationSignal.throwIfAborted();
+      detachSession = this.loopCtx.sessions.enter(session);
+      detachAgent = this.loopCtx.agents.enter(agent, input.parentAgent);
       this.loopCtx.sessions.announce(session);
-      await this.loopCtx.agents.announce(agent, source);
+      publication = this.loopCtx.agents.announce(agent, source, creationSignal);
+      await publication;
+      creationSignal.throwIfAborted();
+      agent.start();
+      creationSignal.throwIfAborted();
 
       return {
         agent,
-        dispose: async () => {
-          runtime.beginShutdown();
-          agent.cancel({ kind: "disposed" }, { keepInbox: true });
-          await agent.whenIdle();
-          offModelSelection();
-          detachAgent();
-          detachSession();
-          await agent.dispose();
-        },
+        dispose,
       };
     } catch (error: unknown) {
       // 回滚：释放已铸造的 agent scope，关闭未物化的写句柄（stock create 的
       // stored?.handle.close()）。
-      await created?.dispose().catch(() => {});
-      await stored?.handle.close().catch(() => {});
+      try { await dispose(); }
+      catch (cleanup) { throw new AggregateError([error, cleanup], "Agent creation failed and rollback reported cleanup failures", { cause: error }); }
       throw error;
     }
   }

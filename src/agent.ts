@@ -22,6 +22,7 @@ import { createScope } from "@deepseek-ai/dsh-scope";
 import type { Scope } from "@deepseek-ai/dsh-scope";
 import type { UserMessage } from "@deepseek-ai/dsh-session";
 import type { Session as DshSession, SessionId as DshSessionId } from "@deepseek-ai/dsh-session";
+import { SessionLogOffset, appendPluginRecord, pluginRecordOf } from "@deepseek-ai/dsh-session";
 
 import type { AgentRuntime, ModelRequest } from "./engine-facade.js";
 import { createExternalTurnFaultError } from "./engine-facade.js";
@@ -56,7 +57,35 @@ export interface ZcodeLoopAgentDeps {
   runWithInitiator?: (operation: () => Promise<void>) => Promise<void>;
 }
 
-type Phase = { kind: "idle" } | { kind: "busy" };
+type Phase = { kind: "idle" | "running" | "maintenance" };
+
+/**
+ * 本文件私有哨兵：`prepareModelStep` 因 dsh pre-step 拒绝而抛出外部 turn fault
+ * 时打标。引擎会把它持久化成 TurnError，但 dsh 侧已把 turn 结束原因置为
+ * blocked；drain 必须保留该语义且不得再报 agent/error。
+ */
+const stepRejection = Symbol("dsh-step-rejection");
+
+function markStepRejection(error: Error): Error {
+  return Object.assign(error, { [stepRejection]: true });
+}
+
+/** 引擎会把外部 fault 包进 CoreError（cause 链），逐层识别哨兵。 */
+function isStepRejection(error: unknown): boolean {
+  let current: unknown = error;
+  const seen = new WeakSet<object>();
+  for (let depth = 0; depth <= 6; depth += 1) {
+    if (current === null || typeof current !== "object" || seen.has(current)) return false;
+    seen.add(current);
+    if ((current as Record<symbol, unknown>)[stepRejection] === true) return true;
+    current = (current as { cause?: unknown }).cause;
+  }
+  return false;
+}
+
+declare module "@deepseek-ai/dsh-session/types" {
+  interface PluginRecordMap { "plugin:zcode-loop/queue-mode": { paused: boolean } }
+}
 
 export class ZcodeLoopAgent implements Agent {
   readonly inbox: ZcodeLoopInbox;
@@ -79,6 +108,11 @@ export class ZcodeLoopAgent implements Agent {
   private stepAssembly?: PromptAssembly;
   private admittedMessages: readonly UserMessage[] = [];
   private engineSurfaceGeneration: number;
+  private ready = false;
+  private disposing = false;
+  private disposal?: Promise<void>;
+  private wakeRequested = false;
+  private queueMode = { paused: false, offset: 0 };
 
   constructor(
     loopCtx: Context,
@@ -104,7 +138,39 @@ export class ZcodeLoopAgent implements Agent {
 
   /** 释放 agent scoped ctx（handle.dispose 与创建回滚时调用，对齐 stock teardown）。 */
   dispose(): Promise<void> {
-    return this.scope.dispose();
+    if (this.disposal) return this.disposal;
+    this.disposing = true;
+    this.ready = false;
+    this.deps.runtime?.beginShutdown();
+    this.cancel({ kind: "disposed" }, { keepInbox: true });
+    return this.disposal = (async () => { await this.whenIdle(); await this.scope.dispose(); })();
+  }
+
+  /** Adopt the public scope disposer under the factory's ordered teardown. */
+  scopeDisposer(): () => Promise<void> | void { return this.scope.rawDispose; }
+
+  /** Publication commits before queued setup/created-listener input may run. */
+  start(): void { if (!this.disposing) { this.ready = true; this.wake(); } }
+
+  /** Fold committed queue-control records, including seed/resume and reentrant observers. */
+  get queuePaused(): boolean {
+    const events = this.session.snapshotEvents(SessionLogOffset(this.queueMode.offset));
+    for (const event of events) {
+      const record = pluginRecordOf(event);
+      if (record?.type !== "plugin:zcode-loop/queue-mode") continue;
+      const data = record.data as { paused?: unknown } | null;
+      if (!data || typeof data.paused !== "boolean") throw new Error(`Invalid queue mode at session seq ${event.seq}`);
+      this.queueMode.paused = data.paused;
+    }
+    this.queueMode.offset += events.length;
+    return this.queueMode.paused;
+  }
+
+  /** Pause later turns without cancelling the current model/tool turn. */
+  setQueuePaused(paused: boolean): void {
+    if (this.disposing) throw new Error("Cannot change the queue of a disposed agent");
+    if (this.queuePaused !== paused) appendPluginRecord(this.session, "plugin:zcode-loop/queue-mode", { paused });
+    if (!paused) this.wake();
   }
 
   /**
@@ -145,7 +211,7 @@ export class ZcodeLoopAgent implements Agent {
   }
 
   get status(): AgentStatus {
-    return this.phase.kind === "idle" ? "idle" : "running";
+    return this.phase.kind === "running" ? "running" : "idle";
   }
 
   // ----------------------------------------------------------------
@@ -153,8 +219,7 @@ export class ZcodeLoopAgent implements Agent {
   // ----------------------------------------------------------------
 
   followup(message: UserMessage): void {
-    this.inbox.append("next-turn", message);
-    this.wake();
+    this.send(message, "next-turn", true);
   }
 
   /**
@@ -163,9 +228,7 @@ export class ZcodeLoopAgent implements Agent {
    * 丢批）→ 维持 next-turn followup 降级（等价下一 turn，输入不丢）。
    */
   steer(message: UserMessage): void {
-    if (this.phase.kind === "busy" && this.steerActive(message)) return;
-    this.inbox.append("next-turn", message);
-    this.wake();
+    this.send(message, "next-step", true);
   }
 
   /**
@@ -174,16 +237,19 @@ export class ZcodeLoopAgent implements Agent {
    * `claim("next-turn")` 拼接消费（stock inject 的 next-step 语义）。
    */
   inject(message: UserMessage): void {
-    if (this.phase.kind === "busy" && this.steerActive(message)) return;
-    this.inbox.append("next-step", message);
+    this.send(message, "next-step", false);
   }
 
   /**
-   * dsh web 不用显式 target：维持忽略 target 仅按 wakeup（备注：stock 按
-   * target 入队，此处分叉未被任何调用方依赖——PLAN 阶段 6 排除项）。
+   * Preserve the caller's inbox target; only waking input may release work
+   * parked behind maintenance or a cancelled driver.
    */
-  send(message: UserMessage, _target: InboxTarget, wakeup: boolean): void {
-    this.inbox.append("next-turn", message);
+  send(message: UserMessage, target: InboxTarget, wakeup: boolean): void {
+    if (target === "next-step" && this.phase.kind === "running" && !this.currentTurnAbort?.signal.aborted && this.steerActive(message)) {
+      if (wakeup) this.wake();
+      return;
+    }
+    this.inbox.append(target, message);
     if (wakeup) this.wake();
   }
 
@@ -231,8 +297,9 @@ export class ZcodeLoopAgent implements Agent {
     }
   }
 
-  whenIdle(): Promise<void> {
-    return this.activity;
+  async whenIdle(): Promise<void> {
+    let observed: Promise<void>;
+    do { await (observed = this.activity); } while (observed !== this.activity);
   }
 
   /**
@@ -240,27 +307,27 @@ export class ZcodeLoopAgent implements Agent {
    * 任务信号随 {@link cancel} 中止。
    */
   runMaintenance<T>(task: (signal: AbortSignal) => Promise<T>): Promise<T> {
-    if (this.phase.kind !== "idle") {
+    if (this.disposing || this.phase.kind !== "idle") {
       throw new Error(`agent "${this.id}" cannot run maintenance while busy`);
     }
     const controller = new AbortController();
     this.currentTurnAbort = controller;
-    this.setPhase(true);
+    this.wakeRequested = false;
+    const done = Promise.withResolvers<void>();
+    this.activity = done.promise;
+    this.setPhase("maintenance");
     const run = (async () => {
       try {
         return await task(controller.signal);
       } finally {
+        const replay = this.wakeRequested && !this.disposing && !(controller.signal.aborted && (controller.signal.reason as AgentCancelCause)?.kind === "disposed");
         this.currentTurnAbort = undefined;
-        this.setPhase(false);
-        // 任务期间 followup 式到达的输入由结尾 wake() 收割（steer/inject 在
-        // busy 期间已走 steerActive，不依赖本次唤醒）。
-        this.wake();
+        this.wakeRequested = false;
+        this.setPhase("idle");
+        if (replay) this.wake();
+        done.resolve();
       }
     })();
-    this.activity = this.activity.then(
-      () => run.then(() => undefined, () => undefined),
-      () => undefined,
-    );
     return run;
   }
 
@@ -268,9 +335,9 @@ export class ZcodeLoopAgent implements Agent {
   // 驱动
   // ----------------------------------------------------------------
 
-  private setPhase(busy: boolean): void {
+  private setPhase(kind: Phase["kind"]): void {
     const previous = this.status;
-    this.phase = busy ? { kind: "busy" } : { kind: "idle" };
+    this.phase = { kind };
     const status = this.status;
     if (status !== previous) {
       this.dispatch.emit("agent/status", { status });
@@ -279,32 +346,42 @@ export class ZcodeLoopAgent implements Agent {
 
   /** idle 时启动 drain；busy 中到达的输入由循环下一轮 claim。 */
   private wake(): void {
-    if (this.phase.kind !== "idle" || !this.inbox.hasPending) return;
+    if (!this.ready || this.disposing || this.queuePaused) return;
+    if (this.phase.kind !== "idle") {
+      const signal = this.currentTurnAbort?.signal;
+      if (!(signal?.aborted && (signal.reason as AgentCancelCause)?.kind === "disposed")
+        && (this.phase.kind === "maintenance" || signal?.aborted)) this.wakeRequested = true;
+      return;
+    }
+    if (!this.inbox.hasPending) return;
+    const controller = new AbortController();
+    this.currentTurnAbort = controller;
+    this.wakeRequested = false;
+    const done = Promise.withResolvers<void>();
+    this.activity = done.promise;
+    this.setPhase("running");
     // 阶段 8b：drain 包进 initiator 边界（goal 工具 authority 依赖
     // currentInitiator；stock loop 同款包装）。
-    const run = this.deps.runWithInitiator?.(() => this.drain()) ?? this.drain();
-    this.activity = this.activity.then(
-      () => run,
-      () => run,
-    );
+    const run = this.deps.runWithInitiator?.(() => this.drain(controller)) ?? this.drain(controller);
+    void run.then(done.resolve, error => { this.dispatch.emit("agent/error", { turn: this.turnCounter, step: 0, error }); done.resolve(); });
   }
 
-  private async drain(): Promise<void> {
-    this.setPhase(true);
+  private async drain(controller: AbortController): Promise<void> {
+    let first = true;
     try {
-      while (this.inbox.hasPending) {
+      while (first || this.inbox.hasPending) {
+        if (controller.signal.aborted || this.disposing || this.queuePaused) break;
+        first = false;
         const turn = this.turnCounter + 1;
-        this.deps.eventBridge?.beginHostTurn(turn);
-        this.turnCounter = turn;
-        const batch = this.inbox.claim("next-turn", turn);
-        if (batch.length === 0) { this.deps.eventBridge?.endHostTurn({ kind: "completed" }); break; }
-        // 每 turn 同步 agent 可见工具；引擎另缓存模型 contract，须一起失效，
-        // 否则后续 preset 工具增删虽已更新 registry，模型仍收到上一轮工具表。
-        this.deps.toolBridge.syncTools();
-        this.deps.runtime?.invalidateToolCache();
-        const controller = new AbortController();
-        this.currentTurnAbort = controller;
         try {
+          this.deps.eventBridge?.beginHostTurn(turn);
+          this.turnCounter = turn;
+          const batch = this.inbox.claim("next-turn", turn);
+          if (batch.length === 0) { this.deps.eventBridge?.endHostTurn({ kind: "completed" }); break; }
+          // 每 turn 同步 agent 可见工具；引擎另缓存模型 contract，须一起失效，
+          // 否则后续 preset 工具增删虽已更新 registry，模型仍收到上一轮工具表。
+          this.deps.toolBridge.syncTools();
+          this.deps.runtime?.invalidateToolCache();
           const runtime = this.deps.runtime;
           if (runtime === undefined) {
             throw new Error(`agent "${this.id}" has no runtime attached`);
@@ -313,7 +390,8 @@ export class ZcodeLoopAgent implements Agent {
           // for example). Preserve that decision at the same turn admission seam.
           const decision = await this.admitStep(batch, { turn, step: 1 }, controller.signal);
           controller.signal.throwIfAborted();
-          if (decision.kind === "reject") { this.deps.eventBridge?.endHostTurn({ kind: "blocked" }); continue; }
+          // dsh 拒绝首步时 driver 结束，排队输入保持 pending，等待新输入唤醒。
+          if (decision.kind === "reject") { this.deps.eventBridge?.endHostTurn({ kind: "blocked" }); break; }
           const generation = this.session.surface.contentGeneration;
           if (generation !== this.engineSurfaceGeneration && this.deps.refreshHistory) {
             await this.deps.refreshHistory();
@@ -326,13 +404,21 @@ export class ZcodeLoopAgent implements Agent {
           const input = decision.messages.map(userMessageText).join("\n\n");
           await runtime.executeTurn(input, undefined, { abortSignal: controller.signal });
         } catch (error: unknown) {
+          // 后续步被 dsh 拒绝：引擎的 TurnError 只是传递宿主决定，turn/end 的
+          // blocked 已由 setTurnEndReason 落盘；保留它并停止，不重复报错。
+          if (isStepRejection(error)) {
+            this.deps.eventBridge?.endHostTurn({ kind: "blocked" });
+            break;
+          }
+          // 开启段或 turn 内失败：保证 turn/end 收口，报一次 agent/error 后停止
+          // driver；排队输入保持 pending，等待新输入唤醒。
           this.deps.eventBridge?.endHostTurn(controller.signal.aborted
             ? { kind: "aborted", reason: { ...(controller.signal.reason as AgentCancelCause) } }
             : { kind: "error", error: { code: "UNKNOWN", message: error instanceof Error ? error.message : String(error) } });
           this.dispatch.emit("agent/error", { turn, step: 0, error });
+          break;
         } finally {
           this.toolContexts.clear();
-          this.currentTurnAbort = undefined;
           // 阶段 2 打点：每 turn 收口快照事件桥丢弃统计，经注入的 debug 出口进
           // dsh 日志面（PROJECTION.md 实测校验建议）；dropped === 0 不打（降噪）。
           const stats = this.deps.eventBridge?.dropStats();
@@ -343,10 +429,18 @@ export class ZcodeLoopAgent implements Agent {
               unknownTypes: stats.unknownTypes,
             });
           }
+          if (!controller.signal.aborted) {
+            controller = new AbortController();
+            this.currentTurnAbort = controller;
+          }
         }
       }
     } finally {
-      this.setPhase(false);
+      const replay = this.wakeRequested && !this.disposing && !(controller.signal.aborted && (controller.signal.reason as AgentCancelCause)?.kind === "disposed");
+      this.currentTurnAbort = undefined;
+      this.wakeRequested = false;
+      this.setPhase("idle");
+      if (replay) this.wake();
     }
   }
 
@@ -360,7 +454,7 @@ export class ZcodeLoopAgent implements Agent {
     signal.throwIfAborted();
     if (decision.kind === "reject") {
       this.deps.eventBridge?.setTurnEndReason({ kind: "blocked" });
-      throw createExternalTurnFaultError("DSH_STEP_REJECTED", "dsh pre-step rejected the next model step");
+      throw markStepRejection(createExternalTurnFaultError("DSH_STEP_REJECTED", "dsh pre-step rejected the next model step"));
     }
     this.deps.eventBridge?.setPendingUserMessages(decision.messages);
     this.deps.eventBridge?.setStartsRequestSeries(decision.startsRequestSeries === true);

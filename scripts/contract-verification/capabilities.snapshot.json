@@ -283,12 +283,12 @@
     "turn.workflowResultConsumed": "d43a4c77f1572ccb1fbba0b0162cfdb1aea1f720efc7bd3a2ec3082a269b0c17"
   },
   "wiring": {
-    "src/index.ts:api.beginShutdown:0": "386cd903f1a933135f352f85cfe97e61c4f670b45b4452800b2200c345ccc1ae",
+    "src/agent.ts:api.beginShutdown:0": "0fbc5c750893f3e6c29fa559258b39a4954d5457b6f864594809b4aa5a63c6a2",
     "src/agent.ts:api.executeTurn:0": "8007f01d8d9f1690696fc10a50a547e907543643046b031a55be46af99d4040d",
     "src/agent.ts:api.invalidateToolCache:0": "1a11920d7907065a3e290d1f66ca1ddfeff2d9b7e11e658b00036abdc61ef90b",
     "src/agent.ts:api.invalidateToolCache:1": "1a11920d7907065a3e290d1f66ca1ddfeff2d9b7e11e658b00036abdc61ef90b",
     "src/index.ts:api.resumeFromStore:0": "0c12d962e2c65dbbd7e352e13f5f535a8c476f34c04b19f16ab0570b9e83da54",
-    "src/index.ts:api.resumeFromStore:1": "9e0cda8148f19e7ed192f5daa575a5c94775d6c53cb28f6c9d420c457008d283",
+    "src/index.ts:api.resumeFromStore:1": "6deff0f8c0edb42b0e5aff0c4e7c72cdb61d85b833e2d251a45dc1539561898f",
     "src/index.ts:api.setSessionModelSelection:0": "c35aa1038042a08e1cbbe53efcc79c6f21871312bce3754469ccf54fda3a25d8",
     "src/agent.ts:api.steerTurn:0": "0295d68b4f62604407562e00487bbc2b685eb73ae9e67afd900210019c7c5e63",
     "src/agent.ts:api.steerTurn:1": "42c56348779bfdd43b1020a373146bb7a979846fb5720c6b1d01ccb18e6f5548",
@@ -296,7 +296,7 @@
   },
   "declarations": {
     "src/agent.ts:ZcodeLoopAgentDeps": "086c52cb11ac43268f800fd9f6db4230bd4dc8f275d3b85dde7029f89c13aac5",
-    "src/agent.ts:Phase": "ca70ab6a2d67d20590a6d6591fc70b6f9e01ac0399b3cfc2a45c6345ec85c55f",
+    "src/agent.ts:Phase": "d35e27ede6400e33d01373715e17124cd48d6ce3f9db09c727d9738755ffe8ac",
     "src/bridges/event-store-bridge.ts:TurnStartedPayload": "6b0ff49175febca54fc473d63d143e2bea8970030f643e234cfee7d1c81d33fb",
     "src/bridges/event-store-bridge.ts:RequestMessageView": "a64e7c81197fcb875c3462aa01cc2a831c80543e840843611fc5c5b713501db8",
     "src/bridges/event-store-bridge.ts:ModelRequestPayload": "87adcec15be9b61ee91d43f9c54fa88592801d471c1ea777b1a9a2338869a8cf",
@@ -328,7 +328,7 @@
     "src/inbox.ts:InboxLiveEvent": "ed00d30bc3f2c1f4170194515ebedc5e33d37edb89b9c8aed40779442a46980c",
     "src/index.ts:Config": "4b6ff5b8a13ff95e23bea28b0cfbc64d14c49b968690b0046968195e8b6a1b00",
     "src/index.ts:StoredSession": "714cb63001f8d86696a8117b0d0233200c0c691cbc6dc09484da174407dce796",
-    "src/index.ts:AssembleAgentInput": "29efa16ec5ea536082f5e67f410eba4e9f50274746afdd5b52964db2aebad2de",
+    "src/index.ts:AssembleAgentInput": "ac74dd7b546fd3d22ac2d887c88d2d2cc02078ea9677549a3b891bb8be6bc075",
     "vendor/zcode/apps/zcode-cli/packages/core/src/agent/agent-listing-metadata.ts:AgentListingDelta": "769fc40682c4568dd2641d5803d4a76fa0493d63fe0ee0fdbd16c22e79cc18fb",
     "vendor/zcode/apps/zcode-cli/packages/core/src/agent/file-part-hydration.ts:PersistedToolMediaLayoutEntry": "9f96a7897d4b3e221bfcfe9b1fdb6a705411a63411d3c88feb3d49e10d286818",
     "vendor/zcode/apps/zcode-cli/packages/core/src/agent/message-history-usage.ts:PersistedTokenUsageBaseline": "0f137f99b51705c88530f05b0a4a2cebe136496f717751f20fe515cecb9ef05c",
@@ -4281,7 +4281,7 @@
     "vendor/zcode/packages/zcode-cua/request-access-contract.d.ts:CuaRequestAccessStatusSchema": "9ec4a5801d05226ac9916cace7a241ee9a6a5b475cf90ead9783a7eafb03b838"
   },
   "implementations": {
-    "src/agent.ts": "aa8fec2aa054c3e9f0b05c50e989c86b655994065cf0acbcc643f79259be99b8",
+    "src/agent.ts": "97655d629e348af53cda7788aeb7773258b85d6f2f8906909f76ba32ea2b7aac",
     "src/bridges/event-store-bridge.ts": "43fea90be3f3b75b767ab5ca8eb070764f91caeef1532ee8e3f98e91b10f24c6",
     "src/bridges/logger-adapter.ts": "852fec3b7728c256689e1bc23b50c5a2e705d1e5e15c22d79d16709eca8895bf",
     "src/bridges/model-bridge.ts": "f0f7428e90564e81d8058cf930743b76e878aa414785929d46869ea0d9088414",
@@ -4289,8 +4289,8 @@
     "src/bridges/system-prompt-bridge.ts": "dcffc9cd9f31c396b6c288d166f9cca1f68d0ad14dbd11cd96b7421cbdb0d1f3",
     "src/bridges/tool-bridge.ts": "3ead0e1bd7bce57bda535243e2fcc31786e96e9fe34a7598031731f1c21863ed",
     "src/engine-facade.ts": "3f88fd85a6b539dc4c35eb86082949e7d5824e18133200547fca13bd63dbed02",
-    "src/inbox.ts": "60229f22ed6033b5289508828690c645cd669be05fe3b329ba96046240703316",
-    "src/index.ts": "824ce5a7102da7c5cbb9b338b9571bef26ee1afe702a5721acd67bfdc0f16726",
+    "src/inbox.ts": "4441b5774c185c074bdf80fa4841ef19ee158c1e92aec6644101659181372e18",
+    "src/index.ts": "21ff0917526271b41531fdfb6d36e7502eefccbb3a463e40e33159310c44f2e0",
     "vendor/zcode/apps/zcode-cli/packages/core/src/agent/agent-listing-metadata.ts": "2191d23972ec0788988cfee12eb7555f0ae5e9f2e23fb7291bb7d6366210f567",
     "vendor/zcode/apps/zcode-cli/packages/core/src/agent/compact-session.ts": "bc73a627e0cb488a13e174fe7081619729f821b2ab544e9b96892656da18fcc4",
     "vendor/zcode/apps/zcode-cli/packages/core/src/agent/file-part-hydration.ts": "3e63971ae6a09cdbd7a1830bbd610faedbc153ad116aca24d9bd88e10df1f9bc",
@@ -5396,7 +5396,7 @@
     "@deepseek-ai/dsh-web-app/./presets/ptc.patch.yml": "9e355c947bf61c3d2fe9bf3214b386f83c0d99d37579ce22576d4b82cb6e1a2c",
     "@deepseek-ai/dsh-web-app/./presets/minimal.patch.yml": "a2a9ba1c9c392a45466708f18bc0aefbf300577f9b544dc06049f73a8a5b3267",
     "@deepseek-ai/dsh-web-app/./presets/cordis.patch.yml": "01b0fc94fd49136b332254a7ae5658e43ffe646f7248047dba65d499cfc74596",
-    "workspace/pnpm-lock.yaml": "6674162e6200856d340ba637eb5aceaddb3030f827077b97d76a97f13e5f64d9",
+    "workspace/pnpm-lock.yaml": "fc1d2d0e0fa20c2ebbbf1dc417f3445759accf341dcd53fdda5cfc8848f05e7a",
     "bridge/cordis.patch.yml": "490915fb2c1bca0b07317bd4c06a5a6d6c2be2ce01b9092f2696c3b23dc6aaa3"
   }
 }

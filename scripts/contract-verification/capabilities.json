@@ -94,7 +94,7 @@
       "evidence": [
         {
           "file": "src/index.ts",
-          "needle": "await runtime.resumeFromStore("
+          "needle": "runtime.resumeFromStore({ persistedMessages"
         },
         {
           "file": "src/bridges/resume-adapter.ts",
