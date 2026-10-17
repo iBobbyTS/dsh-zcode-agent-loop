@@ -486,6 +486,7 @@ export class ZcodeLoop extends Service implements AgentFactory {
         ctx: this.loopCtx,
         // 桥先于 agent 构造；延迟解析本实例，供 schema/metadata/执行共享 scope。
         agent: () => agent,
+        acceptContexts: (callId, messages) => agent.acceptToolContexts(callId, messages),
       });
       // 生效路由写回 agentOptions：agent.options 的 provider/model 是 persona 段
       // prompt 变量（{{provider}}/{{model}}，web 模板自带 personaPrefix 引用）与
@@ -608,6 +609,7 @@ export class ZcodeLoop extends Service implements AgentFactory {
       // live 通路：桥的流式 frame 经 agent 的 dsh AgentEventDispatch 发
       // agent/assistant-stream（stock 同款面，web UI 据此逐字渲染）。
       eventBridge.setStreamPublisher((frame) => agent.emitAssistantStream(frame));
+      eventBridge.setToolResultListener((callId) => agent.deliverToolContexts(callId));
       // resume/fork-seed 冷恢复（resumeContext 在场即走，见上文构建条件）：
       // persistedMessages 直传（绕开 sessionStore.messages()），
       // 引擎内部完成 ensureContextInitialized → 历史 hydration → session_resumed

@@ -27,6 +27,7 @@
     "verify:smoke": "node scripts/smoke.mjs",
     "verify:source-fidelity": "tsx scripts/source-fidelity-integration.ts",
     "verify:goal-chain": "tsx scripts/goal-chain-integration.ts",
+    "verify:tool-surface-context": "tsx scripts/tool-surface-context-integration.ts",
     "verify:preset-tools": "tsx scripts/preset-tools-integration.ts",
     "verify:matrix": "tsx scripts/verify-matrix.ts",
     "verify:contracts:selftest": "tsx scripts/contract-verification/selftest.ts",

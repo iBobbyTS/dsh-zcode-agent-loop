@@ -13,7 +13,7 @@
  * - model_streaming         → 累积为该步 assistant 的紧凑流（AssistantStreamAccumulator）
  *                               （live：有 publisher 时逐 chunk 发 agent/assistant-stream frame）
  * - model_complete          → 缓冲 assistant/message（等工具结果或下一边界落）
- * - tool_call_scheduled     → 落缓冲的 assistant/message（含 tool-call 块）+ tool/call
+ * - tool_call_scheduled     → 暂存至完整 assistant 可落盘，再依次写 tool/call
  * - tool_call_result/error  → tool/result（surfaceOp append，sourceEventSeqs 配对 tool/call）
  * - turn_complete/error     → 落缓冲 assistant/message + step/end（若 open）+ turn/end{reason}
  * - compact_started/completed/failed、model_anomaly_warning → 不落盘，logger 镜像
@@ -148,6 +148,7 @@ interface PendingAssistant {
   stopReason: string;
   usage: ModelCompletePayload["usage"];
   toolCalls: PendingToolCall[];
+  expectedToolCalls: number;
   stream: AssistantStreamAccumulator;
 }
 
@@ -345,7 +346,10 @@ export class DshSessionEventStoreBridge implements SessionEventStorePort {
   private openBlock: OpenBlock | undefined;
   private nextBlockIndex = -1;
   private streamAccumulator: AssistantStreamAccumulator | undefined;
-  private streamFinished = false;
+  private streamedToolCalls: PendingToolCall[] = [];
+  private pendingToolEvents: { type: "scheduled" | "result" | "error"; payload: ToolCallScheduledPayload | ToolCallResultPayload | ToolCallErrorPayload }[] = [];
+  private committedToolResults: string[] = [];
+  private toolResultListener: ((callId: string) => Promise<void>) | undefined;
   private streamErrorCount = 0;
   private systemMessageLogged = false;
   private lastRequest: { provider: string; model: string } | undefined;
@@ -402,6 +406,11 @@ export class DshSessionEventStoreBridge implements SessionEventStorePort {
     this.streamPublisher = publish;
   }
 
+  /** Tool contexts may enter the owning turn only after their durable result. */
+  setToolResultListener(listener: (callId: string) => Promise<void>): void {
+    this.toolResultListener = listener;
+  }
+
   /**
    * 注入本 turn claim 的原始 user 消息批（agent.drain 在 executeTurn 前调用）：
    * translateModelRequest 落盘时逐条 append 原消息对象（producer source 保真，
@@ -439,6 +448,9 @@ export class DshSessionEventStoreBridge implements SessionEventStorePort {
     const stored: SessionEvent = { ...event, sequenceNumber };
     state.push(stored);
     this.translate(stored);
+    // Take the batch before awaiting: steerTurn itself appends engine events.
+    const committed = this.committedToolResults.splice(0);
+    for (const callId of committed) await this.toolResultListener?.(callId);
     return stored;
   }
 
@@ -590,7 +602,7 @@ export class DshSessionEventStoreBridge implements SessionEventStorePort {
     this.openBlock = undefined;
     this.nextBlockIndex = -1;
     this.streamAccumulator = new AssistantStreamAccumulator();
-    this.streamFinished = false;
+    this.streamedToolCalls = [];
     this.streamErrorCount = 0;
   }
 
@@ -600,6 +612,7 @@ export class DshSessionEventStoreBridge implements SessionEventStorePort {
     this.step = 0;
     this.stepOpen = false;
     this.pendingAssistant = undefined;
+    this.pendingToolEvents = [];
     this.toolCallSeqs = new Map();
     this.resetStepStream();
     this.options.session.append("turn/start", { turn: this.dshTurn(turn) });
@@ -814,6 +827,9 @@ export class DshSessionEventStoreBridge implements SessionEventStorePort {
         const blockId = payload.toolCallId ?? block.toolCallId ?? "";
         const blockName = payload.toolName ?? block.toolName ?? "";
         const args = payload.input === undefined ? (block.arguments ?? "") : JSON.stringify(payload.input);
+        if (!this.streamedToolCalls.some((call) => call.callId === blockId)) {
+          this.streamedToolCalls.push({ callId: blockId, name: blockName, arguments: args });
+        }
         push({
           type: "block-end",
           index: block.index,
@@ -823,7 +839,8 @@ export class DshSessionEventStoreBridge implements SessionEventStorePort {
         return;
       }
       case "finish": {
-        this.streamFinished = true;
+        // Engine finish events omit the reason. ModelComplete supplies it;
+        // flushPendingAssistant emits the one terminal chunk to both paths.
         return;
       }
       case "error": {
@@ -837,10 +854,10 @@ export class DshSessionEventStoreBridge implements SessionEventStorePort {
   private expectBlock(kind: OpenBlock["kind"]): OpenBlock {
     if (this.openBlock === undefined || this.openBlock.kind !== kind) {
       this.openBlock = { kind, index: ++this.nextBlockIndex, text: "" };
-      this.streamAccumulator?.push({
-        time: this.now(),
-        chunk: { type: "block-start", index: this.openBlock.index, blockType: kind },
-      });
+      const time = this.now();
+      const chunk: StreamChunk = { type: "block-start", index: this.openBlock.index, blockType: kind };
+      this.streamAccumulator?.push({ time, chunk });
+      this.emitLiveChunk(chunk, time);
     }
     return this.openBlock;
   }
@@ -859,11 +876,18 @@ export class DshSessionEventStoreBridge implements SessionEventStorePort {
       text: payload.content,
       stopReason: payload.stopReason,
       usage: payload.usage,
-      toolCalls: [],
+      toolCalls: [...this.streamedToolCalls],
+      expectedToolCalls: payload.toolCallCount ?? this.streamedToolCalls.length,
       stream: this.streamAccumulator ?? new AssistantStreamAccumulator(),
     };
     this.pendingAssistant = assistant;
     this.streamAccumulator = undefined;
+    for (const event of this.pendingToolEvents) {
+      if (event.type === "scheduled") this.addPendingToolCall(event.payload as ToolCallScheduledPayload);
+    }
+    if (assistant.toolCalls.length >= assistant.expectedToolCalls && assistant.expectedToolCalls > 0) {
+      this.flushPendingAssistant();
+    }
   }
 
   private closeOpenBlock(): void {
@@ -874,13 +898,17 @@ export class DshSessionEventStoreBridge implements SessionEventStorePort {
       return;
     }
     const time = this.now();
+    const push = (entry: { time: number; chunk: StreamChunk }): void => {
+      accumulator.push(entry);
+      this.emitLiveChunk(entry.chunk, entry.time);
+    };
     if (block.kind === "text") {
-      accumulator.push({
+      push({
         time,
         chunk: { type: "block-end", index: block.index, block: { type: "text", text: block.text } },
       });
     } else if (block.kind === "reasoning") {
-      accumulator.push({
+      push({
         time,
         chunk: {
           type: "block-end",
@@ -889,7 +917,7 @@ export class DshSessionEventStoreBridge implements SessionEventStorePort {
         },
       });
     } else {
-      accumulator.push({
+      push({
         time,
         chunk: {
           type: "block-end",
@@ -906,11 +934,10 @@ export class DshSessionEventStoreBridge implements SessionEventStorePort {
     this.openBlock = undefined;
   }
 
-  /** 落缓冲的 assistant/message（若有）。`newToolCall` 先入 tool-call 块列表再落。 */
-  private flushPendingAssistant(newToolCall?: PendingToolCall): void {
+  /** Commit the complete assistant before replaying any dependent tool journal. */
+  private flushPendingAssistant(): void {
     const assistant = this.pendingAssistant;
     if (assistant === undefined) return;
-    if (newToolCall !== undefined) assistant.toolCalls.push(newToolCall);
     const content: ContentBlock[] = [];
     if (assistant.text.length > 0) content.push({ type: "text", text: assistant.text });
     for (const toolCall of assistant.toolCalls) {
@@ -929,27 +956,26 @@ export class DshSessionEventStoreBridge implements SessionEventStorePort {
     if (!streamHasContentRecord(accumulator)) {
       accumulator = new AssistantStreamAccumulator();
       const chunks = synthesizeStreamChunks(assistant);
-      for (const chunk of chunks) accumulator.push({ time, chunk });
+      for (const chunk of chunks) {
+        accumulator.push({ time, chunk });
+        this.emitLiveChunk(chunk, time);
+      }
     }
     if (usage !== undefined && (usage.inputTokens !== undefined || usage.outputTokens !== undefined)) {
-      accumulator.push({
-        time,
-        chunk: {
-          type: "usage",
-          usage: {
-            inputTokens: usage.inputTokens ?? 0,
-            outputTokens: usage.outputTokens ?? 0,
-            ...(usage.totalTokens === undefined ? {} : { totalTokens: usage.totalTokens }),
-          },
+      const chunk: StreamChunk = {
+        type: "usage",
+        usage: {
+          inputTokens: usage.inputTokens ?? 0,
+          outputTokens: usage.outputTokens ?? 0,
+          ...(usage.totalTokens === undefined ? {} : { totalTokens: usage.totalTokens }),
         },
-      });
+      };
+      accumulator.push({ time, chunk });
+      this.emitLiveChunk(chunk, time);
     }
-    if (!this.streamFinished) {
-      accumulator.push({
-        time,
-        chunk: { type: "finish", reason: dshFinishKindFromStopReason(assistant.stopReason) },
-      });
-    }
+    const finish: StreamChunk = { type: "finish", reason: dshFinishKindFromStopReason(assistant.stopReason) };
+    accumulator.push({ time, chunk: finish });
+    this.emitLiveChunk(finish, time);
     const stream: AssistantStreamRecord[] = accumulator.snapshot().map((record) => ({ ...record }));
     const source = this.lastRequest ?? { provider: "dsh", model: "unknown" };
     const usageField: TokenUsage = {
@@ -975,19 +1001,39 @@ export class DshSessionEventStoreBridge implements SessionEventStorePort {
       seq: appended.seq,
     });
     this.pendingAssistant = undefined;
-    this.streamFinished = false;
+    const pending = this.pendingToolEvents.splice(0);
+    for (const event of pending) {
+      if (event.type === "scheduled") this.translateToolCallScheduled(event.payload as ToolCallScheduledPayload);
+      else if (event.type === "result") this.translateToolCallResult(event.payload as ToolCallResultPayload);
+      else this.translateToolCallError(event.payload as ToolCallErrorPayload);
+    }
+  }
+
+  private addPendingToolCall(payload: ToolCallScheduledPayload): void {
+    const assistant = this.pendingAssistant;
+    if (assistant !== undefined && !assistant.toolCalls.some((call) => call.callId === payload.toolCallId)) {
+      assistant.toolCalls.push({ callId: payload.toolCallId, name: payload.toolName, arguments: JSON.stringify(payload.input ?? {}) });
+    }
   }
 
   private translateToolCallScheduled(payload: ToolCallScheduledPayload): void {
     const turn = this.requireTurn();
     if (turn === undefined) return;
+    // Streaming execution may schedule/result before ModelComplete. Non-stream
+    // execution only reveals the complete call set through scheduled events.
+    if (this.pendingAssistant !== undefined || this.streamAccumulator !== undefined) {
+      this.pendingToolEvents.push({ type: "scheduled", payload });
+      this.addPendingToolCall(payload);
+      if (this.pendingAssistant !== undefined && this.pendingAssistant.toolCalls.length >= this.pendingAssistant.expectedToolCalls) {
+        this.flushPendingAssistant();
+      }
+      return;
+    }
     const toolCall: PendingToolCall = {
       callId: payload.toolCallId,
       name: payload.toolName,
       arguments: JSON.stringify(payload.input ?? {}),
     };
-    // assistant/message（含至今的 tool-call 块）先于首个 tool/call 落进 surface。
-    this.flushPendingAssistant(toolCall);
     const event = this.options.session.append("tool/call", {
       turn: this.dshTurn(turn),
       step: this.step,
@@ -999,6 +1045,10 @@ export class DshSessionEventStoreBridge implements SessionEventStorePort {
   }
 
   private translateToolCallResult(payload: ToolCallResultPayload): void {
+    if (this.pendingAssistant !== undefined || this.streamAccumulator !== undefined) {
+      this.pendingToolEvents.push({ type: "result", payload });
+      return;
+    }
     const turn = this.requireTurn();
     const callSeq = this.toolCallSeqs.get(payload.toolCallId);
     if (turn === undefined || callSeq === undefined) return;
@@ -1016,9 +1066,14 @@ export class DshSessionEventStoreBridge implements SessionEventStorePort {
       },
       { surfaceOp: "append", sourceEventSeqs: [SessionSeq(callSeq)] },
     );
+    this.committedToolResults.push(payload.toolCallId);
   }
 
   private translateToolCallError(payload: ToolCallErrorPayload): void {
+    if (this.pendingAssistant !== undefined || this.streamAccumulator !== undefined) {
+      this.pendingToolEvents.push({ type: "error", payload });
+      return;
+    }
     const turn = this.requireTurn();
     const callSeq = this.toolCallSeqs.get(payload.toolCallId);
     if (turn === undefined || callSeq === undefined) return;
@@ -1041,6 +1096,7 @@ export class DshSessionEventStoreBridge implements SessionEventStorePort {
       },
       { surfaceOp: "append", sourceEventSeqs: [SessionSeq(callSeq)] },
     );
+    this.committedToolResults.push(payload.toolCallId);
   }
 
   private translateTurnComplete(_payload: TurnCompletePayload): void {

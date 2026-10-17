@@ -21,7 +21,7 @@
  */
 import type { Context } from "@deepseek-ai/cordis";
 import type { Agent } from "@deepseek-ai/dsh-agent";
-import type { ToolSchema } from "@deepseek-ai/dsh-llm";
+import type { ToolSchema, UserMessage } from "@deepseek-ai/dsh-llm";
 import { ToolCallId } from "@deepseek-ai/dsh-llm";
 
 import { createToolRegistry } from "../engine-facade.js";
@@ -32,6 +32,8 @@ export interface DshToolBridgeOptions {
   ctx: Context;
   /** 延迟解析本桥所属代理，统一 schemas/get/execute 的显式 scope key。 */
   agent?: () => Agent | undefined;
+  /** Stage contexts until the matching tool/result has reached the session. */
+  acceptContexts?: (callId: string, messages: readonly UserMessage[]) => void;
   /** 复用既有 registry（缺省新建；引擎侧 built-in 工具也会注册进来）。 */
   registry?: ToolRegistry;
 }
@@ -186,6 +188,9 @@ async function executeThroughDshPipeline(
     ...(agent === undefined ? {} : { agent }),
     signal: context.abortSignal,
   });
+  if (result.additionalContexts?.length) {
+    options.acceptContexts?.(context.toolCallId, result.additionalContexts);
+  }
   const text = result.content
     .map((block) => (block.type === "text" ? block.text : `[${block.type} content]`))
     .join("\n");

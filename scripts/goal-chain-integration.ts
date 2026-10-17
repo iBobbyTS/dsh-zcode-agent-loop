@@ -231,6 +231,16 @@ async function main(): Promise<void> {
 
   // ---- 断言 3：surface source 保真 ----
   const events = agent.session.snapshotEvents();
+  const notices = events.filter((event) => event.type === "user/message" && event.data.source.kind === "tool-goal");
+  assert(notices.length === 1, `expected one goal completion notice, got ${notices.length}`);
+  const notice = notices[0]!;
+  assert(notice.type === "user/message" && notice.data.source.kind === "tool-goal" && notice.data.source.form === "notice", "goal context source/form must survive");
+  const noticeText = notice.data.content.filter((block) => block.type === "text").map((block) => block.text).join("\n");
+  const nextRequestText = JSON.stringify(adapter.requests[3]!.messages);
+  assert(nextRequestText.split(JSON.stringify(noticeText).slice(1, -1)).length - 1 === 1, "actual closing request must contain the deferred instruction exactly once");
+  const completeResult = events.find((event) => event.type === "tool/result" && event.data.message.toolCallId === tcid("call-goal-complete"));
+  assert(completeResult !== undefined && completeResult.seq < notice.seq, "goal notice must follow its result");
+  console.log("[goal-chain] 断言6 ✓ tool-goal/notice source、结果后投递、实际 R4 指令恰一次");
   const userMessages = events.filter((event) => event.type === "user/message");
   const humanMessages = userMessages.filter((event) => (event.data as { source?: { kind?: string } }).source?.kind === "user");
   const goalMessages = userMessages.filter(

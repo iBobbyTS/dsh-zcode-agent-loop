@@ -44,6 +44,8 @@ Every group in the generated report includes producer **and** consumer file/line
 
 ## Evidence and delivery ownership
 
+The failure sites below describe the frozen original capture. Current tool-exchange repair status is recorded separately below; the original member counts and immutable ledger are unchanged.
+
 - **Factory identity:** `src/index.ts:265` registers `zcodeLoop` and the agents factory. Installed `@deepseek-ai/dsh-agent/lib/index.js:429` consumes `setFactory`. Compare actual `ready` and `complete` service **sets**, not each sorted position.
 - **Inbox registration:** installed `@deepseek-ai/dsh-agent-loop/lib/index.js:26` defines the inbox fold and `:1583` registers it; installed `@deepseek-ai/dsh-session-projection/lib/index.js:126` reads state and `:138` exposes registered wire views. `src/inbox.ts:7` describes private folding and `src/index.ts:278` registers only turnBoundary. The existing projection framework owns this seam; a new plugin is unnecessary unless extraction is later chosen for reuse.
 - **Request tools/context/header policy:** installed stock loop `lib/index.js:1217` builds the complete admitted header, `:1226` applies equality/series rules, and `:1264` builds context before `:1271` appends it. Installed session `lib/index.js:637` folds headers and `:1627` folds context. `src/bridges/event-store-bridge.ts:678` persists only route and writes every request as initial/change. All required host contracts already exist.
@@ -63,6 +65,16 @@ The raw order is still behavior: ZCode claims next-turn inbox before `turn/start
 The scripted goal adapter chooses its closing answer by request count (`scripts/contract-verification/fixture.ts:113`), so passing the fixture does not establish that the model received the missing closing instruction. New tests for later repairs must assert that actual request input and durable source, not only the resulting answer.
 
 No original member establishes a rewind/checkpoint/rollback/memory gap or requires a new dsh plugin. Those broader capabilities remain outside these three fixtures. No runtime repair, production allowance, fixture change or equivalence approval is part of this classification stage.
+
+## Tool-exchange repair status
+
+The bridge now retains all streamed call identities/names/arguments and stages dependent tool journals until the complete assistant can be committed. Non-streaming responses collect the expected scheduled-call count before committing. This also handles during-stream execution, where scheduled calls and results can precede `model_complete`. Every dependent `tool/call` follows the assistant surface containing its call block; replay retains the pairings.
+
+Engine streaming finish events omit the stop reason, so the bridge finalizes once using `model_complete.stopReason`. The persisted compact stream and live frames receive the same terminal chunk, after usage, and the live end references the committed assistant sequence. Stop, tool-calls and length/max-tokens are checked through the installed `BlockAssembler`, not by inspecting an internal flag.
+
+Tool execution now stages the original `additionalContexts` messages on the owning agent, including error results. After the matching durable `tool/result`, the agent records next-step inbox insertion/claim, submits an awaited guide through the existing runtime queue, and appends each original `user/message`. Selective synchronous claim prevents ordinary steering from consuming the same deferred messages during the await. The following real adapter request is checked for the instruction exactly once. This is transient result staging plus the existing durable inbox/session contracts; it adds no plugin or scheduler.
+
+`pnpm verify:tool-surface-context` covers streaming/non-streaming single and paired calls, during-stream result ordering, session replay, terminal assembly/live completion, usage, success/error deferred instructions and concurrent owner/sibling isolation with reused call IDs. Targeted probes against the pre-repair bridge fail for missing terminal chunks and premature tool journaling; the pre-repair tool bridge fails deferred-notice delivery. `pnpm verify:goal-chain` additionally asserts the actual goal-round completion notice's `tool-goal` source and `notice` form, its ordering after the result and its text in the actual closing request. Typecheck, pipeline and source-fidelity checks pass. Real browser acceptance remains a separate parent delivery check. Request header/context policy and inbox projection registration remain outside this repair; the core differential is still expected to be red, with no new allowances or equivalence claim.
 
 ## Additional live-preset gap: agent-scoped tool visibility
 

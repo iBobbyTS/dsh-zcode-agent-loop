@@ -76,6 +76,16 @@ export class ZcodeLoopInbox implements Inbox {
     return claimed;
   }
 
+  /** Claim only a committed tool result's contexts; leave other queued inputs alone. */
+  claimMessages(ids: readonly MessageId[], turn: number): UserMessage[] {
+    const claimed: UserMessage[] = [];
+    for (const id of ids) {
+      const index = this.state["next-step"].findIndex((message) => message.id === id);
+      if (index >= 0) claimed.push(...this.apply("next-step", index, 1, [], false, turn));
+    }
+    return claimed;
+  }
+
   append(target: InboxTarget, message: UserMessage): void {
     this.splice(target, this.state[target].length, 0, [message]);
   }

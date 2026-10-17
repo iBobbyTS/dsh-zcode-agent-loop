@@ -83,6 +83,7 @@ export class ZcodeLoopAgent implements Agent {
   private currentTurnAbort: AbortController | undefined;
   private activity: Promise<void> = Promise.resolve();
   private readonly dispatch: AgentEventDispatch;
+  private readonly toolContexts = new Map<string, readonly UserMessage[]>();
 
   constructor(
     loopCtx: Context,
@@ -116,6 +117,33 @@ export class ZcodeLoopAgent implements Agent {
    */
   emitAssistantStream(frame: AssistantStreamFrame): void {
     this.dispatch.emit("agent/assistant-stream" as never, { frame } as never);
+  }
+
+  /** Called by this agent's tool bridge, including error results with contexts. */
+  acceptToolContexts(callId: string, messages: readonly UserMessage[]): void {
+    this.toolContexts.set(callId, messages);
+  }
+
+  /** Matching result is durable; enqueue a single guide for the next model step. */
+  async deliverToolContexts(callId: string): Promise<void> {
+    const messages = this.toolContexts.get(callId);
+    if (messages === undefined || messages.length === 0) return;
+    this.toolContexts.delete(callId);
+    for (const message of messages) this.inbox.append("next-step", message);
+    const runtime = this.deps.runtime;
+    if (runtime === undefined) return;
+    // Claim synchronously before awaiting the engine: external steering also
+    // claims next-step, and must not submit these same contexts a second time.
+    const claimed = this.inbox.claimMessages(messages.map((message) => message.id), this.turnCounter);
+    const result = await runtime.steerTurn({ input: messages.map(userMessageText).join("\n\n"), delivery: "guide" });
+    if (result.kind === "rejected") {
+      this.deps.logDebug?.("tool context delivery rejected", { callId, reason: result.reason });
+      for (const message of claimed) this.inbox.append("next-step", message);
+      return;
+    }
+    for (const message of claimed) {
+      this.session.append("user/message", message, { surfaceOp: "append" });
+    }
   }
 
   get status(): AgentStatus {
@@ -304,6 +332,7 @@ export class ZcodeLoopAgent implements Agent {
         } catch (error: unknown) {
           this.dispatch.emit("agent/error", { turn, step: 0, error });
         } finally {
+          this.toolContexts.clear();
           this.currentTurnAbort = undefined;
           // 阶段 2 打点：每 turn 收口快照事件桥丢弃统计，经注入的 debug 出口进
           // dsh 日志面（PROJECTION.md 实测校验建议）；dropped === 0 不打（降噪）。
