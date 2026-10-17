@@ -35,6 +35,7 @@ import type {
 } from "@deepseek-ai/dsh-llm";
 import {
   AssistantStreamAccumulator,
+  assembleAssistantStream,
   createAssistantMessage,
   createDeveloperMessage,
   createSystemMessage,
@@ -43,8 +44,8 @@ import {
   LlmAttemptId,
   ToolCallId,
 } from "@deepseek-ai/dsh-llm";
-import type { Session as DshSession } from "@deepseek-ai/dsh-session";
-import { canonicalHeader, headerEquals, SessionSeq } from "@deepseek-ai/dsh-session";
+import type { Session as DshSession, TurnEndReason } from "@deepseek-ai/dsh-session";
+import { canonicalHeader, headerEquals, SessionSeq, ToolCallRecovery } from "@deepseek-ai/dsh-session";
 import type { AssistantStreamFrame } from "@deepseek-ai/dsh-agent";
 
 import type {
@@ -369,8 +370,16 @@ export class DshSessionEventStoreBridge implements SessionEventStorePort {
   private readonly now: () => number;
   /** resume 场景的 turn 号偏移（见 setTurnBase；create 会话恒 0）。 */
   private turnBase = 0;
+  private hostTurn?: number;
+  private hostTurnOpen = false;
   /** 引擎 auto-compact 进行中（摘要 sidecar 请求的翻译门，见 translate）。 */
   private compacting = false;
+  private requestBoundary?: (position: { turn: number; step: number }) => Promise<void>;
+  private stagedRequest?: ModelRequestPayload;
+  private recordedEngineRequest?: ModelRequestPayload;
+  private turnEndReason?: TurnEndReason;
+  private promptCommitter?: (prepared: PreparedLlmCall) => void;
+  private retryCurrentStep = false;
 
   // live 通路状态（stock AssistantStreamAttempt 语义；无 publisher 时全部静止）。
   /** 晚绑定：bridge 在 agent 之前创建，agent 构造后由外壳回填（index.ts）。 */
@@ -401,7 +410,27 @@ export class DshSessionEventStoreBridge implements SessionEventStorePort {
    * 用户消息数，让新 turn 落在已有最大 turn 之后，避免重复 turn 号。
    */
   setTurnBase(base: number): void {
-    this.turnBase = Math.max(0, Math.trunc(base));
+    // One dsh turn can contain several user/context messages. The engine's
+    // hydration counter counts those messages, so the alignment offset may be negative.
+    this.turnBase = Math.trunc(base);
+  }
+
+  /** dsh opens its turn before pre-step, so automatic compaction has an owner. */
+  beginHostTurn(turn: number): void {
+    if (this.hostTurnOpen) throw new Error("Cannot open a second host turn");
+    this.hostTurn = turn;
+    this.turn = 0;
+    this.step = 0;
+    this.stepOpen = false;
+    this.turnEndReason = undefined;
+    this.options.session.append("turn/start", { turn });
+    this.hostTurnOpen = true;
+  }
+
+  endHostTurn(reason: TurnEndReason): void {
+    if (!this.hostTurnOpen) return;
+    this.turnEndReason = reason;
+    this.translateTurnComplete({});
   }
 
   /** Preserve the existing host pre-step series marker until the next admitted call. */
@@ -411,7 +440,7 @@ export class DshSessionEventStoreBridge implements SessionEventStorePort {
 
   /** 引擎 turnNumber（0 起）→ dsh turn 号（1 起，含 resume 偏移）。 */
   private dshTurn(turn: number | undefined): number {
-    return this.turnBase + (turn ?? 0) + 1;
+    return this.hostTurn ?? this.turnBase + (turn ?? 0) + 1;
   }
 
   /**
@@ -434,6 +463,64 @@ export class DshSessionEventStoreBridge implements SessionEventStorePort {
    */
   setPendingUserMessages(messages: readonly UserMessage[] | undefined): void {
     this.pendingUserMessages = messages;
+  }
+
+  /** Production-only host admission. Standalone projection consumers keep immediate translation. */
+  setRequestBoundary(boundary: (position: { turn: number; step: number }) => Promise<void>): void {
+    this.requestBoundary = boundary;
+  }
+
+  setTurnEndReason(reason: TurnEndReason): void { this.turnEndReason = reason; }
+  setPromptCommitter(commit: (prepared: PreparedLlmCall) => void): void { this.promptCommitter = commit; }
+  get startsNewRequestSeries(): boolean { return this.startsRequestSeries || this.requestSurfaceGeneration !== this.options.session.surface.contentGeneration; }
+
+  get requestPosition(): { turn: number; step: number } { return { turn: this.dshTurn(this.turn), step: this.step }; }
+
+  rearmPreparedRequest(): void { this.mainRequestPending = true; }
+
+  /** Preserve engine request-only entries (output-limit continuation) without restoring stale history. */
+  requestOnlyMessages(messages: readonly RequestMessageView[]): number[] {
+    const recorded = this.recordedEngineRequest?.messages ?? [];
+    const key = (m: RequestMessageView) => JSON.stringify({ role: m.role, content: m.content, toolCalls: (m as { toolCalls?: unknown }).toolCalls });
+    let cursor = 0;
+    const extra: number[] = [];
+    for (let i = 0; i < messages.length; i++) {
+      if (cursor < recorded.length && key(messages[i]!) === key(recorded[cursor]!)) cursor++;
+      else extra.push(i);
+    }
+    if (cursor !== recorded.length) throw new Error("Engine request-only projection changed; refusing to silently replace context");
+    return extra;
+  }
+
+  private finishStep(): void {
+    this.flushPendingAssistant();
+    if (this.stepOpen) {
+      this.options.session.append("step/end", { turn: this.dshTurn(this.turn), step: this.step });
+      this.stepOpen = false;
+    }
+  }
+
+  /** Settle a stream interrupted before the engine could emit ModelComplete. */
+  private settleIncompleteStream(interrupted: boolean): void {
+    if (this.pendingAssistant || !this.streamAccumulator || !streamHasContentRecord(this.streamAccumulator)) return;
+    const stream = [...this.streamAccumulator.snapshot()];
+    const content = interrupted ? assembleAssistantStream(stream).interruptedBlocks() : [];
+    const position = this.requestPosition;
+    const event = content.length ? this.options.session.append("assistant/message", {
+      ...position, message: createAssistantMessage({ content, source: this.lastRequest ?? { provider: "dsh", model: "unknown" } }),
+      interrupted: true, stream,
+    }, { surfaceOp: "append" }) : this.options.session.append("assistant/attempt", { ...position, stream });
+    this.endLiveAttempt({ kind: "committed", eventType: content.length ? "assistant/message" : "assistant/attempt", seq: event.seq });
+    this.streamAccumulator = undefined;
+    this.openBlock = undefined;
+  }
+
+  private repairPendingToolResults(): void {
+    const recovery = new ToolCallRecovery();
+    for (const event of this.options.session.snapshotEvents()) recovery.observe(event);
+    for (const event of recovery.results()) this.options.session.append("tool/result", event.data, {
+      surfaceOp: "append", ...(event.sourceEventSeqs ? { sourceEventSeqs: event.sourceEventSeqs } : {}),
+    });
   }
 
   /** 翻译统计快照（AC：丢弃可见、会话不炸）。 */
@@ -463,6 +550,12 @@ export class DshSessionEventStoreBridge implements SessionEventStorePort {
     this.latestSequence.set(event.sessionId, Math.max(this.latestSequence.get(event.sessionId) ?? 0, sequenceNumber));
     const stored: SessionEvent = { ...event, sequenceNumber };
     state.push(stored);
+    if (stored.type === "model_request" && !this.compacting && this.requestBoundary && this.turn !== undefined) {
+      if (!this.retryCurrentStep) {
+        this.finishStep();
+        await this.requestBoundary({ turn: this.dshTurn(this.turn), step: this.step + 1 });
+      }
+    }
     this.translate(stored);
     // Take the batch before awaiting: steerTurn itself appends engine events.
     const committed = this.committedToolResults.splice(0);
@@ -541,6 +634,27 @@ export class DshSessionEventStoreBridge implements SessionEventStorePort {
       case "model_request": {
         this.translateModelRequest(event.payload as ModelRequestPayload);
         this.translatedCount += 1;
+        return;
+      }
+      case "stream_recovery_anchor_selected": {
+        if (this.requestBoundary) {
+          const recovery = event.payload as { reason?: string; committedToolCallIds?: string[] };
+          if (recovery.reason === "no_tool_committed") this.retryCurrentStep = true;
+          else if (recovery.reason === "latest_committed_tool_result") {
+            // Core can settle complete tool declarations after a broken stream
+            // without emitting ModelComplete or ToolCallScheduled for calls
+            // that never ran. Preserve that pairing obligation on dsh's surface.
+            const ids = new Set(recovery.committedToolCallIds ?? []);
+            const calls = this.streamedToolCalls.filter(call => ids.has(call.callId));
+            if (calls.length !== ids.size) throw new Error("Stream recovery refers to an unknown complete tool declaration");
+            this.settleIncompleteStream(false);
+            this.pendingAssistant = { turn: this.turn!, step: this.step, text: "", stopReason: "tool-calls", toolCalls: calls,
+              expectedToolCalls: calls.length, usage: undefined, stream: new AssistantStreamAccumulator() };
+            this.flushPendingAssistant();
+            this.repairPendingToolResults();
+          }
+        }
+        this.drop(event);
         return;
       }
       case "model_streaming": {
@@ -628,11 +742,15 @@ export class DshSessionEventStoreBridge implements SessionEventStorePort {
     this.step = 0;
     this.stepOpen = false;
     this.mainRequestPending = false;
+    this.stagedRequest = undefined;
+    this.recordedEngineRequest = undefined;
+    this.turnEndReason = undefined;
+    this.retryCurrentStep = false;
     this.pendingAssistant = undefined;
     this.pendingToolEvents = [];
     this.toolCallSeqs = new Map();
     this.resetStepStream();
-    this.options.session.append("turn/start", { turn: this.dshTurn(turn) });
+    if (!this.hostTurnOpen) this.options.session.append("turn/start", { turn: this.dshTurn(turn) });
     // user/message 等首个 model_request 再落：system/message 必须是 surface 节点 0，
     // 而引擎在 turn_started 才给出 input、首个 model_request 才给出 system prompt。
     // claim 批在场（agent drain 注入）时不缓冲 text——批为权威，防双写。
@@ -644,6 +762,16 @@ export class DshSessionEventStoreBridge implements SessionEventStorePort {
     if (turn === undefined) {
       // 没有.turn_started 的请求无法放进 dsh turn 配对里：丢弃计数。
       this.pendingUserText = undefined;
+      return;
+    }
+    if (this.retryCurrentStep) {
+      this.settleIncompleteStream(false);
+      this.resetStepStream();
+      this.retryCurrentStep = false;
+      this.recordedEngineRequest = payload;
+      this.stagedRequest = payload;
+      this.mainRequestPending = true;
+      this.lastRequest = { provider: payload.providerId, model: payload.modelId };
       return;
     }
     const step = this.step + 1;
@@ -660,13 +788,29 @@ export class DshSessionEventStoreBridge implements SessionEventStorePort {
     }
     this.options.session.append("step/start", { turn: this.dshTurn(turn), step });
     this.stepOpen = true;
+    this.step = step;
+    this.mainRequestPending = true;
+    this.recordedEngineRequest = payload;
+    this.lastRequest = { provider: payload.providerId, model: payload.modelId };
+    this.resetStepStream();
+    if (this.requestBoundary) {
+      this.stagedRequest = payload;
+      return;
+    }
+    this.commitRequestMessages(payload);
+  }
+
+  private commitRequestMessages(payload: ModelRequestPayload): void {
+    const turn = this.turn;
+    if (turn === undefined) return;
+    const step = this.step;
     // system prompt 只在首次请求落（原型：后续变化丢弃计数，不做 in-history 归一化）。
     // 修复（最小改动，报告声明）：custom system prompt 路径下引擎会发**多条**前导
     // system 消息（cli_prefix 身份行 + stable custom body），全部都是模型可见内容；
     // 原实现只落 messages[0] 会让第二条（dsh 装配文本）绕过落盘，违反
     // "Model-visible means logged"。现在把全部前导 system 拼接为一条 dsh
     // system/message；单条 system 的旧行为不变（拼接结果 === 原文）。
-    if (!this.systemMessageLogged) {
+    if (!this.promptCommitter && !this.systemMessageLogged) {
       const leadingSystemText: string[] = [];
       for (const message of payload.messages) {
         if (message.role === "system" && typeof message.content === "string") {
@@ -704,10 +848,6 @@ export class DshSessionEventStoreBridge implements SessionEventStorePort {
       );
       this.pendingUserText = undefined;
     }
-    this.step = step;
-    this.mainRequestPending = true;
-    this.lastRequest = { provider: payload.providerId, model: payload.modelId };
-    this.resetStepStream();
   }
 
   /**
@@ -717,7 +857,13 @@ export class DshSessionEventStoreBridge implements SessionEventStorePort {
    */
   recordPreparedRequest(prepared: PreparedLlmCall, request: GenerateOptions): void {
     if (this.compacting || !this.mainRequestPending || this.turn === undefined || !this.stepOpen) return;
+    this.promptCommitter?.(prepared);
+    if (this.stagedRequest || this.pendingUserMessages) {
+      this.commitRequestMessages(this.stagedRequest ?? this.recordedEngineRequest!);
+      this.stagedRequest = undefined;
+    }
     this.mainRequestPending = false;
+    this.lastRequest = { provider: prepared.config.provider, model: prepared.config.model };
     const session = this.options.session;
     const tools = request.tools ?? [];
     const header = canonicalHeader(structuredClone({
@@ -1179,9 +1325,12 @@ export class DshSessionEventStoreBridge implements SessionEventStorePort {
   private translateTurnComplete(_payload: TurnCompletePayload): void {
     const turn = this.requireTurn();
     if (turn === undefined) return;
+    if (this.turnEndReason?.kind === "aborted") this.settleIncompleteStream(true);
     this.flushPendingAssistant();
+    if (this.turnEndReason?.kind === "aborted") this.repairPendingToolResults();
     // turn 收口清理：未被本 turn 消费的 claim 批（未到 model_request）不得泄漏到下一 turn。
     this.pendingUserMessages = undefined;
+    this.stagedRequest = undefined;
     this.mainRequestPending = false;
     this.startsRequestSeries = false;
     // v4 关系校验：turn/end 前不允许 open step（消息类事件已在其内落定）。
@@ -1189,15 +1338,20 @@ export class DshSessionEventStoreBridge implements SessionEventStorePort {
       this.options.session.append("step/end", { turn: this.dshTurn(turn), step: this.step });
       this.stepOpen = false;
     }
-    this.options.session.append("turn/end", { turn: this.dshTurn(turn), reason: { kind: "completed" } });
+    this.options.session.append("turn/end", { turn: this.dshTurn(turn), reason: this.turnEndReason ?? { kind: "completed" } });
+    this.hostTurnOpen = false;
+    this.turn = undefined;
   }
 
   private translateTurnError(payload: TurnErrorPayload): void {
     const turn = this.requireTurn();
     if (turn === undefined) return;
+    this.settleIncompleteStream(this.turnEndReason?.kind === "aborted");
     this.flushPendingAssistant();
+    this.repairPendingToolResults();
     // turn 收口清理：未被本 turn 消费的 claim 批（未到 model_request）不得泄漏到下一 turn。
     this.pendingUserMessages = undefined;
+    this.stagedRequest = undefined;
     this.mainRequestPending = false;
     this.startsRequestSeries = false;
     // v4 关系校验：turn/end 前不允许 open step。（错误路径若还有未解析的
@@ -1208,7 +1362,7 @@ export class DshSessionEventStoreBridge implements SessionEventStorePort {
     }
     this.options.session.append("turn/end", {
       turn: this.dshTurn(turn),
-      reason: {
+      reason: this.turnEndReason ?? {
         kind: "error",
         error: {
           message: payload.error?.message ?? "turn failed",
@@ -1216,5 +1370,7 @@ export class DshSessionEventStoreBridge implements SessionEventStorePort {
         },
       },
     });
+    this.hostTurnOpen = false;
+    this.turn = undefined;
   }
 }

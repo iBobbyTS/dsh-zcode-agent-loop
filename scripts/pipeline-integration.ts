@@ -209,18 +209,14 @@ async function main(): Promise<void> {
   assert(roles[0] === "system", `derived must open with system, got ${roles[0] ?? "<empty>"}`);
   assert(roles.includes("user") && roles.includes("assistant") && roles.includes("tool"), "derived must rebuild the full backbone");
 
-  // system prompt 是 dsh SystemPrompt.assemble() 的产物（harness identity 段在场）。
-  // 引擎在 custom prompt 路径仍无条件保留自身 cli_prefix 身份行（"You are
-  // ZCode..."，无配置门可关）；桥已修复为把全部前导 system 拼成一条
-  // dsh system/message（模型可见即落盘），因此 derived 的 system 文本应同时
-  // 含引擎身份行与 dsh 装配文本。
+  // The prepared dsh route admits its own prompt; engine CLI identity stays internal.
   const systemMessages = derived.filter((message) => message.role === "system");
   assert(systemMessages.length === 1, `expected one merged system message, got ${String(systemMessages.length)}`);
   const systemText =
     systemMessages[0]?.content.map((block) => (block.type === "text" ? block.text : "")).join("") ?? "";
   assert(
-    systemText.startsWith("You are ZCode"),
-    `merged system message must open with the engine cli-prefix line, got: ${JSON.stringify(systemText.slice(0, 60))}`,
+    systemText === "You are an AI agent powered by DeepSeek Harness.",
+    `model-visible system prompt must equal the dsh assembly: ${JSON.stringify(systemText)}`,
   );
   assert(
     systemText.includes("DeepSeek Harness"),

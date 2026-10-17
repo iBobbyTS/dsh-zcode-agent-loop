@@ -407,7 +407,7 @@ export class ZcodeLoop extends Service implements AgentFactory {
     initialSelection?: { providerId: string; modelId: string };
   } {
     const events = session.snapshotEvents(SessionLogOffset(0));
-    const messages = translateDshEventsToEngineMessages(events, engineSessionId);
+    const messages = translateDshEventsToEngineMessages(events, engineSessionId, new Set(session.surface.nodes));
     // 引擎恢复后 turnNumber 从历史用户消息数起；dsh seed 的已有 turn 数可能更多
     // （失败 turn 未必落过 user/message）。偏移 = 最大已有 turn − 引擎历史基线，
     // 保证新 turn 号接在 seed 之后不重复（event-store-bridge setTurnBase）。
@@ -536,7 +536,7 @@ export class ZcodeLoop extends Service implements AgentFactory {
       // （refresh 热更新 resolved 元数据），不能只作内联实参。
       const modelFactory = createDshModelBridge({
         ctx: this.loopCtx,
-        onPreparedRequest: (prepared, request) => eventBridge.recordPreparedRequest(prepared, request),
+        streamRequest: (request, engineRequest) => agent.streamModelRequest(request, engineRequest),
         provider,
         model,
         ...(resolved === undefined ? {} : { resolved }),
@@ -573,6 +573,10 @@ export class ZcodeLoop extends Service implements AgentFactory {
           toolAllowlist: [],
           dynamicWorkflowEnabled: false,
           dynamicWorkflowToolsOnDemand: false,
+          // dsh owns the effective surface and all compaction transactions.
+          // Running a second in-memory compactor would diverge again on resume.
+          compact: { enabled: false },
+          titleGeneration: { enabled: false },
           // 逐字流式（streaming=false → 引擎整段 generateText，无 model_streaming/live frame）。
           modelStreaming: this.config.streaming === false ? "off" : "on",
         },
@@ -586,10 +590,16 @@ export class ZcodeLoop extends Service implements AgentFactory {
           // 经 adapter 进 dsh 日志面；端口缺席时引擎日志走黑洞。
           logger: dshLogger,
           // resume 冷路径：引擎 resumeFromStore 强制要求 sessionStore（哑适配器）。
-          ...(resumeContext === undefined ? {} : { sessionStore: resumeContext.sessionStore }),
+          sessionStore: resumeContext?.sessionStore ?? createResumeSessionStore(sessionId,
+            createResumeSessionInfo(sessionId, input.meta?.cwd ?? process.cwd(), session.header.createdAt)),
         },
       });
       agentDeps.runtime = runtime;
+      agentDeps.refreshHistory = () => runtime.resumeFromStore({
+        persistedMessages: translateDshEventsToEngineMessages(session.snapshotEvents(), sessionId, new Set(session.surface.nodes)),
+      }).then(() => undefined);
+      eventBridge.setRequestBoundary((position) => agent.prepareModelStep(position));
+      eventBridge.setPromptCommitter((prepared) => agent.commitPrompt(prepared));
       // 阶段 4：会话内换模型/换档。dsh UI 换选 → api-session-controller
       // selectForNextRequest 落盘 `model/selection`（data {provider, model,
       // reasoningEffort?}）→ 这里映射成引擎 session selection（下一 turn 的
@@ -643,6 +653,7 @@ export class ZcodeLoop extends Service implements AgentFactory {
       return {
         agent,
         dispose: async () => {
+          runtime.beginShutdown();
           agent.cancel({ kind: "disposed" }, { keepInbox: true });
           await agent.whenIdle();
           offModelSelection();

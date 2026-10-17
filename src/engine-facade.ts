@@ -11,7 +11,7 @@
  *   最小 config/deps 装配（对照上游 `apps/zcode-cli/packages/core/tests` 的
  *   test-agent-runtime / test-runtime-model 写法，照结构不照语义）。
  */
-import { AgentRuntime, SessionEventType } from "@zcode/core";
+import { AgentRuntime, SessionEventType, createExternalTurnFaultError } from "@zcode/core";
 import { createToolRegistry } from "@zcode/core";
 import type { ResumeSessionOptions } from "@zcode/core";
 import type {
@@ -76,7 +76,7 @@ import type {
 // 引擎值与类型的再导出（门面消费面）
 // ------------------------------------------------------------------
 
-export { AgentRuntime, InMemorySessionEventStore, SessionEventType };
+export { AgentRuntime, InMemorySessionEventStore, SessionEventType, createExternalTurnFaultError };
 export { createToolRegistry };
 export {
   createMessageId,

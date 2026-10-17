@@ -6,6 +6,8 @@ import { tmpdir } from 'node:os';
 import { assessCapabilities, capabilityExit, capabilityInventory, manifestPath, scanEngine, scanWiring, type Manifest } from './capabilities.js';
 import { runCheck } from './check.js';
 import type { runMatrix } from './runner.js';
+import { readCapabilitySnapshot } from './capabilities.js';
+import { sourceSnapshot, snapshotDifferences } from './capability-snapshot.js';
 
 const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as Manifest;
 const inventory = capabilityInventory();
@@ -56,10 +58,24 @@ check('public inheritance cannot silently bypass scanning', () => {
  assert.throws(() => changed('/runtime/types.ts', s => s.replace('export interface AgentRuntimeConfig {', 'export interface AgentRuntimeConfig extends AddedConfig {')), /inherits members/);
 });
 check('duplicate classification and stale evidence are rejected', () => {
- const duplicate = structuredClone(manifest); duplicate.groups[1]!.members = { ...duplicate.groups[1]!.members, ...duplicate.groups[0]!.members };
+ const duplicate = structuredClone(manifest); duplicate.groups[1]!.members = [...duplicate.groups[1]!.members, ...duplicate.groups[0]!.members];
  assert.throws(() => assessCapabilities(scanEngine(), duplicate), /Duplicate capability/);
  const stale = structuredClone(manifest); stale.groups[0]!.evidence[0]!.needle = 'nonexistent-bridge-evidence';
  assert.throws(() => assessCapabilities(scanEngine(), stale), /Stale capability evidence/);
+});
+
+check('referenced/result types and function bodies are generated drift evidence without manual hashes', () => {
+ const baseline = readCapabilitySnapshot();
+ const altered = sourceSnapshot(file => {
+  const source = readFileSync(file, 'utf8');
+  if (file.endsWith('/runtime/types.ts')) return source.replace('export interface TurnResult {', 'export interface TurnResult { newResultField?: boolean;');
+  if (file.endsWith('/runtime/methods/microcompact.ts')) return source.replace('if (this.config.compact?.enabled === false) return;', 'if (this.config.compact?.enabled === true) return;');
+  return source;
+ });
+ assert(snapshotDifferences(altered.declarations, baseline.declarations, 'type').some(row => row.id.endsWith(':TurnResult')));
+ assert(snapshotDifferences(altered.implementations, baseline.implementations, 'body').some(row => row.id.endsWith('/methods/microcompact.ts')));
+ const report = assessCapabilities(scanEngine(), manifest, scanWiring(), baseline, altered);
+ assert.equal(capabilityExit(report), 1); assert.equal(report.integrationStatus, 'UNKNOWN');
 });
 check('production wiring changes require reassessment and test/façade references do not prove an entry', () => {
  const wiring = scanWiring();

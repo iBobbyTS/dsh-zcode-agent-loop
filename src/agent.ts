@@ -1,23 +1,7 @@
 /**
- * agent — ZCode 引擎驱动的最小 dsh Agent。
- *
- * 实现 `@deepseek-ai/dsh-agent` 的运行时 Agent 面（followup/steer/inject/cancel/
- * whenIdle/runMaintenance/status/inbox）。驱动模型（原型 v0）：
- *
- * - `followup` / `send(wakeup=true)` → 入 next-turn inbox 并唤醒；唤醒后 drain
- *   循环逐条 claim（一条 followup 独占一个 turn），每 turn 前
- *   `toolBridge.syncTools()`（任务合同"每 turn 前同步 schemas"），再
- *   `runtime.executeTurn(text, { abortSignal })`。
- * - `steer`/`inject`（阶段 6 真语义，stock 对齐 `send(next-step)`）：busy 时经
- *   steerActive 立即喂引擎 `runtime.steerTurn({delivery:"guide"})`（内联当前轮，
- *   不切轮；留痕 + surface user/message 落盘）；steer 空闲时降级 next-turn+
- *   wake（引擎空闲会 rejected，保输入不丢），inject 空闲时排 next-step 不唤醒
- *   （由 drain 的 claim 拼接消费）。steerTurn 的 promise 链吞错（同步契约）。
- * - `cancel` → abort 当前 turn 的 AbortController（引擎收口事件流）；
- *   除非 `keepInbox`，先持久清空 inbox。
- * - 事件：`agent/status`（idle⇄running）、`agent/error` 与 inbox live 词表
- *   （`agent/inbox/inserted|claimed|discarded`，经 inbox 的 emitLive 回调转发）
- *   均经 dsh-agent 的 `agentEvents` 派发面发声。
+ * dsh Agent/Inbox owner around the embedded ZCode execution loop.
+ * Every model step crosses dsh admission; requests consume the durable surface.
+ * ZCode owns model/tool execution, continuation and stream recovery.
  */
 import type { Context } from "@deepseek-ai/cordis";
 import type {
@@ -32,15 +16,20 @@ import type {
   PreStepDecision,
 } from "@deepseek-ai/dsh-agent";
 import { agentEvents } from "@deepseek-ai/dsh-agent";
+import { LlmError, markAgentLoopRequest } from "@deepseek-ai/dsh-llm";
+import type { GenerateOptions, LlmCallConfig, PreparedLlmCall, StreamChunk } from "@deepseek-ai/dsh-llm";
 import { createScope } from "@deepseek-ai/dsh-scope";
 import type { Scope } from "@deepseek-ai/dsh-scope";
 import type { UserMessage } from "@deepseek-ai/dsh-session";
 import type { Session as DshSession, SessionId as DshSessionId } from "@deepseek-ai/dsh-session";
 
-import type { AgentRuntime } from "./engine-facade.js";
+import type { AgentRuntime, ModelRequest } from "./engine-facade.js";
+import { createExternalTurnFaultError } from "./engine-facade.js";
 import { ZcodeLoopInbox, userMessageText } from "./inbox.js";
 import type { DshSessionEventStoreBridge } from "./bridges/event-store-bridge.js";
 import type { DshToolBridge } from "./bridges/tool-bridge.js";
+import { DshPromptAdmission } from "./bridges/system-prompt-bridge.js";
+import type { PromptAssembly } from "@deepseek-ai/dsh-system-prompt";
 
 export interface ZcodeLoopAgentDeps {
   /**
@@ -49,6 +38,7 @@ export interface ZcodeLoopAgentDeps {
    * 引擎就绪前 agent 不会进入任何 turn（构造→装配→挂载→发布后才可被驱动）。
    */
   runtime?: AgentRuntime;
+  refreshHistory?: () => Promise<void>;
   toolBridge: DshToolBridge;
   /** 阶段 2：事件桥句柄——drain 每 turn 收口时取 dropStats 快照打点；缺席时跳过。 */
   eventBridge?: DshSessionEventStoreBridge;
@@ -85,6 +75,10 @@ export class ZcodeLoopAgent implements Agent {
   private activity: Promise<void> = Promise.resolve();
   private readonly dispatch: AgentEventDispatch;
   private readonly toolContexts = new Map<string, readonly UserMessage[]>();
+  private readonly promptAdmission: DshPromptAdmission;
+  private stepAssembly?: PromptAssembly;
+  private admittedMessages: readonly UserMessage[] = [];
+  private engineSurfaceGeneration: number;
 
   constructor(
     loopCtx: Context,
@@ -94,8 +88,11 @@ export class ZcodeLoopAgent implements Agent {
     private readonly deps: ZcodeLoopAgentDeps,
   ) {
     this.scope = createScope(loopCtx, this);
+    this.turnCounter = session.snapshotEvents().reduce((last, event) => event.type === "turn/start" ? Math.max(last, event.data.turn) : last, 0);
     this.ctx = this.scope.ctx;
     this.dispatch = agentEvents(loopCtx, this);
+    this.promptAdmission = new DshPromptAdmission(loopCtx, this);
+    this.engineSurfaceGeneration = session.surface.contentGeneration;
     // 阶段 6：inbox live 事件（inserted/claimed/discarded）转发进本 agent 的
     // 派发面（stock 同款词表）。闭包延迟读 dispatch，构造顺序无要求；
     // `agent/assistant-stream` 先例：事件声明不在本插件依赖集的类型面里，emit
@@ -199,27 +196,11 @@ export class ZcodeLoopAgent implements Agent {
     // runtime 缺席守卫放最前：不动 inbox（不吞消息），调用方回退降级路径。
     const runtime = this.deps.runtime;
     if (runtime === undefined) return false;
-    // 1) 持久留痕（spliced insert + live inserted）——引擎侧注入结果如何，
-    //    输入已在账本上（steering 审计面，stock 的 inbox 语义）。
+    // Keep original input pending until the next host pre-step decides. The
+    // engine guide only wakes its active loop; it is not surface admission.
     this.inbox.append("next-step", message);
-    // 2) 消费性留痕（live claimed，记到当前 turn）：拿走全部 next-step——含
-    //    此前 inject 的残留，逐条处理。空数组只在理论竞态下出现，直接放弃。
-    const claimed = this.inbox.claim("next-step", this.turnCounter);
-    if (claimed.length === 0) return false;
-    for (const claimedMessage of claimed) {
-      // 3) surface 落盘（stock 对齐：steering 输入对 dsh surface 可见）。busy
-      //    时 open turn 已在场（turn/start 已落），直接 append 合法；阶段 8a
-      //    起落 claim 的原消息对象（producer source 与原始 content 块保真，
-      //    不再重建 {kind:"user"}）。text 只作引擎侧输入投影（非 text 块占位）。
-      const text = userMessageText(claimedMessage);
-      this.session.append("user/message", claimedMessage, { surfaceOp: "append" });
-      // 4) 喂引擎：delivery "guide" = 对进行中工作的补充引导，内联当前轮不切
-      //    轮（next-step 语义）。steer()/inject() 是同步契约——promise 必须
-      //    void 吞错：accepted 无事可做；rejected（no_active_turn 等空闲竞态/
-      //    维护窗口，result 不抛错）打 debug 日志；链上异常同样吞进日志，绝不
-      //    冒进同步调用栈。
       void runtime
-        .steerTurn({ input: text, delivery: "guide" })
+        .steerTurn({ input: userMessageText(message), delivery: "guide" })
         .then(
           (result) => {
             if (result.kind === "rejected") {
@@ -235,7 +216,6 @@ export class ZcodeLoopAgent implements Agent {
             this.deps.logDebug?.("steerTurn failed", { error: String(error) });
           },
         );
-    }
     return true;
   }
 
@@ -245,8 +225,10 @@ export class ZcodeLoopAgent implements Agent {
 
   cancel(cause: AgentCancelCause, options?: CancelOptions): void {
     if (options?.keepInbox !== true) this.inbox.clear();
-    const reason = new Error(`agent "${this.id}" cancelled: ${cause.kind}`);
-    this.currentTurnAbort?.abort(reason);
+    if (this.currentTurnAbort && !this.currentTurnAbort.signal.aborted) {
+      this.deps.eventBridge?.setTurnEndReason({ kind: "aborted", reason: { ...cause } });
+      this.currentTurnAbort.abort(cause);
+    }
   }
 
   whenIdle(): Promise<void> {
@@ -312,8 +294,10 @@ export class ZcodeLoopAgent implements Agent {
     try {
       while (this.inbox.hasPending) {
         const turn = this.turnCounter + 1;
+        this.deps.eventBridge?.beginHostTurn(turn);
+        this.turnCounter = turn;
         const batch = this.inbox.claim("next-turn", turn);
-        if (batch.length === 0) break;
+        if (batch.length === 0) { this.deps.eventBridge?.endHostTurn({ kind: "completed" }); break; }
         // 每 turn 同步 agent 可见工具；引擎另缓存模型 contract，须一起失效，
         // 否则后续 preset 工具增删虽已更新 registry，模型仍收到上一轮工具表。
         this.deps.toolBridge.syncTools();
@@ -327,18 +311,24 @@ export class ZcodeLoopAgent implements Agent {
           }
           // The host owns explicit request-series boundaries (goal continuation,
           // for example). Preserve that decision at the same turn admission seam.
-          const decision: PreStepDecision = await this.dispatch.waterfall("agent/pre-step", {
-            messages: batch, turn, step: 1, signal: controller.signal,
-          }, () => Promise.resolve({ kind: "enter" as const, messages: batch }));
+          const decision = await this.admitStep(batch, { turn, step: 1 }, controller.signal);
           controller.signal.throwIfAborted();
-          if (decision.kind === "reject") continue;
-          this.turnCounter = turn;
+          if (decision.kind === "reject") { this.deps.eventBridge?.endHostTurn({ kind: "blocked" }); continue; }
+          const generation = this.session.surface.contentGeneration;
+          if (generation !== this.engineSurfaceGeneration && this.deps.refreshHistory) {
+            await this.deps.refreshHistory();
+            controller.signal.throwIfAborted();
+            this.engineSurfaceGeneration = generation;
+          }
           // Only admitted messages reach the durable user-message bridge.
           this.deps.eventBridge?.setPendingUserMessages(decision.messages);
           this.deps.eventBridge?.setStartsRequestSeries(decision.startsRequestSeries === true);
           const input = decision.messages.map(userMessageText).join("\n\n");
           await runtime.executeTurn(input, undefined, { abortSignal: controller.signal });
         } catch (error: unknown) {
+          this.deps.eventBridge?.endHostTurn(controller.signal.aborted
+            ? { kind: "aborted", reason: { ...(controller.signal.reason as AgentCancelCause) } }
+            : { kind: "error", error: { code: "UNKNOWN", message: error instanceof Error ? error.message : String(error) } });
           this.dispatch.emit("agent/error", { turn, step: 0, error });
         } finally {
           this.toolContexts.clear();
@@ -357,6 +347,90 @@ export class ZcodeLoopAgent implements Agent {
       }
     } finally {
       this.setPhase(false);
+    }
+  }
+
+  /** Every subsequent engine step crosses the same dsh admission boundary. */
+  async prepareModelStep(position: { turn: number; step: number }): Promise<void> {
+    if (position.step === 1) return; // The first batch is admitted by drain before executeTurn.
+    const signal = this.currentTurnAbort!.signal;
+    signal.throwIfAborted();
+    const messages = this.inbox.claim("next-step", position.turn);
+    const decision = await this.admitStep(messages, position, signal);
+    signal.throwIfAborted();
+    if (decision.kind === "reject") {
+      this.deps.eventBridge?.setTurnEndReason({ kind: "blocked" });
+      throw createExternalTurnFaultError("DSH_STEP_REJECTED", "dsh pre-step rejected the next model step");
+    }
+    this.deps.eventBridge?.setPendingUserMessages(decision.messages);
+    this.deps.eventBridge?.setStartsRequestSeries(decision.startsRequestSeries === true);
+  }
+
+  private async admitStep(messages: UserMessage[], position: { turn: number; step: number }, signal: AbortSignal): Promise<PreStepDecision> {
+    this.stepAssembly = await this.promptAdmission.assemble(signal);
+    signal.throwIfAborted();
+    const context = this.promptAdmission.context(this.stepAssembly, signal);
+    const decision = await this.dispatch.waterfall("agent/pre-step", { ...position, messages, signal },
+      () => Promise.resolve({ kind: "enter" as const, messages: context ? [...messages, context] : messages }));
+    signal.throwIfAborted();
+    this.admittedMessages = decision.kind === "enter" ? decision.messages : [];
+    return decision;
+  }
+
+  commitPrompt(prepared: PreparedLlmCall): void {
+    if (!this.stepAssembly) throw new Error("Model request without dsh prompt assembly");
+    const bridge = this.deps.eventBridge!;
+    const context = this.promptAdmission.context(this.stepAssembly, this.currentTurnAbort!.signal);
+    this.promptAdmission.commit(this.stepAssembly, bridge.requestPosition, prepared.systemPromptUpdate === "in-history", bridge.startsNewRequestSeries);
+    bridge.setPendingUserMessages([...this.admittedMessages.filter(message => message.source.kind !== "runtime-context"), ...(context ? [context] : [])]);
+    this.admittedMessages = [];
+  }
+
+  /** The dsh waterfall owns route changes and request-error recovery. */
+  async *streamModelRequest(proposal: GenerateOptions, engineRequest: ModelRequest): AsyncIterable<StreamChunk> {
+    const signal = this.currentTurnAbort!.signal;
+    const position = this.deps.eventBridge!.requestPosition;
+    let config: LlmCallConfig = {
+      provider: proposal.provider, model: proposal.model,
+      ...(proposal.maxTokens === undefined ? {} : { maxTokens: proposal.maxTokens }),
+      ...(proposal.reasoningEffort === undefined ? {} : { reasoningEffort: proposal.reasoningEffort }),
+    };
+    while (true) {
+      signal.throwIfAborted();
+      config = await this.dispatch.waterfall("agent/request", { ...position, signal }, () => Promise.resolve(Object.freeze({ ...config })));
+      signal.throwIfAborted();
+      const prepared: PreparedLlmCall = await this.ctx.llm.prepareCall(config, signal);
+      signal.throwIfAborted();
+      this.deps.toolBridge.syncTools();
+      this.deps.runtime?.invalidateToolCache();
+      const request = markAgentLoopRequest({ ...proposal, tools: this.ctx.tools.schemas(this), ...prepared.config, sessionId: this.session.id, signal });
+      this.deps.eventBridge!.recordPreparedRequest(prepared, request);
+      const transient = this.deps.eventBridge!.requestOnlyMessages(engineRequest.messages).map(index => proposal.messages[index]!);
+      request.messages = [...this.session.deriveMessages(), ...transient];
+      request.toolHistory = this.session.toolHistory();
+      let emitted = false;
+      try {
+        for await (const chunk of prepared.stream(request)) {
+          signal.throwIfAborted();
+          if (chunk.type === "finish" && (chunk.reason.kind === "error" || chunk.reason.kind === "aborted")) {
+            throw new LlmError(chunk.reason.failure.message, chunk.reason.failure.code, chunk.reason.failure);
+          }
+          emitted = true;
+          yield chunk;
+        }
+        return;
+      } catch (error) {
+        signal.throwIfAborted();
+        const failure = error instanceof LlmError ? error.failure : { code: "UNKNOWN", message: error instanceof Error ? error.message : String(error) };
+        const action = await this.dispatch.waterfall("agent/request-error", {
+          ...position, signal, provider: prepared.config.provider, failure, retryPolicy: prepared.retryPolicy,
+        }, () => Promise.resolve(undefined));
+        if (action?.kind !== "retry") throw error;
+        // The public model error's retryable fact delegates partial-tail reset
+        // to ZCode's bounded recovery; never concatenate a fresh stream here.
+        if (emitted) throw Object.assign(error instanceof Error ? error : new Error(String(error)), { retryable: true });
+        this.deps.eventBridge!.rearmPreparedRequest();
+      }
     }
   }
 }

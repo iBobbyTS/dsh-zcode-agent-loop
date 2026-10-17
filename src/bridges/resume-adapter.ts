@@ -95,6 +95,7 @@ function textPart(
 export function translateDshEventsToEngineMessages(
   events: readonly DshSessionEvent[],
   engineSessionId: SessionId,
+  visibleSeqs?: ReadonlySet<number>,
 ): MessageWithParts[] {
   const messages: MessageWithParts[] = [];
   /** callID → 最近一个铸造出来的 pending ToolPart（tool/result 配对用）。 */
@@ -103,15 +104,17 @@ export function translateDshEventsToEngineMessages(
   let lastUserId: MessageId | undefined;
 
   for (const event of events) {
+    // Compaction/pruning replace surface nodes; raw historical events are audit,
+    // not the active conversation to hydrate back into the engine.
+    if (visibleSeqs && !visibleSeqs.has(event.seq)) continue;
     // id 用事件 seq 派生：跨重启稳定、log 内唯一（每个消息类事件只产一条消息）。
     const messageId = createMessageId(`dsh-${event.seq}`);
     switch (event.type) {
       case "user/message": {
         // dsh SessionEventMap：user/message 的 data 就是 UserMessage 本体。
         const message = event.data;
-        // 只收真用户输入；合成 inject（file-change 通知等）的 source.kind 不同，
-        // 逆向不进引擎历史（plan 改动清单第 1 条）。
-        if (message.source.kind !== "user") break;
+        // All surviving producer sources are model-visible, including goal,
+        // scheduler, runtime-context and compaction checkpoints.
         const info: UserMessageInfo = {
           id: messageId,
           sessionID: engineSessionId,
@@ -236,6 +239,10 @@ export function createResumeSessionStore(
     // todo/goal 上下文读取有 try/catch 兜底：返回空即「无 todo/goal 可恢复」。
     readTodos: () => Promise.resolve([]),
     readTarget: () => Promise.resolve(null),
+    // Permission ownership is dsh's tool pipeline. Native executor still probes
+    // the project rule reader whenever a sessionStore exists, including resume.
+    getProjectPermission: () => Promise.resolve(null),
+    saveProjectPermission: () => Promise.resolve(),
     // resumeFromStore 置 sessionPersisted=true 后，turn 循环会对每条消息调
     // saveMessage/savePart（引擎自己的持久化通路）。真持久化由 dsh session log
     // （事件桥落盘）承担，这里一律吞掉写副作用，避免哑 store 在热路径 TypeError

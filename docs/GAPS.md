@@ -1,5 +1,7 @@
 # 模型能力桥接：已补全项与缺口（zcode-loop 原型）
 
+2026-10-17：生产主请求已从有效 dsh surface 派生，动态 prompt、toolHistory 和 prepared-route 准入接通；不再把“所有消息只走 blockToText”作为生产通路描述。下面保留原始模型声明／独立桥的映射依据；图片、复杂工具结果与媒体端到端验收继续归 [T08/T14](INTEGRATION-PLAN.md)，尚不宣称完成。
+
 本文档覆盖**模型元数据层**；引擎能力层的按模块桥接盘点见
 [CAPABILITIES.md](CAPABILITIES.md)，事件投影层见 [PROJECTION.md](PROJECTION.md)。
 

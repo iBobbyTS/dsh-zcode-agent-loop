@@ -606,8 +606,8 @@ async function main() {
   );
   assert(replay.finalText === FINAL_TEXT, `derived final assistant text must match, got ${JSON.stringify(replay.finalText)}`);
   assert(
-    replay.systemText.includes("You are ZCode") && replay.systemText.includes("DeepSeek Harness"),
-    `derived system message must carry engine identity + dsh assembly, got ${JSON.stringify(replay.systemText.slice(0, 120))}...`,
+    replay.systemText.startsWith("You are an AI agent powered by DeepSeek Harness."),
+    `derived system message must use the admitted dsh assembly, got ${JSON.stringify(replay.systemText.slice(0, 120))}...`,
   );
   assert(replay.toolCalls.length === 1 && replay.toolCalls[0]?.name === ECHO_TOOL, `derived assistant must carry the ${ECHO_TOOL} call, got ${JSON.stringify(replay.toolCalls)}`);
   assert(replay.toolResults.length === 1, `derived must hold exactly one tool message, got ${JSON.stringify(replay.toolResults)}`);

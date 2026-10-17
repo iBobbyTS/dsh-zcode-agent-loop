@@ -67,13 +67,15 @@ export class DshModelError extends Error {
   readonly providerCode: string;
   readonly status?: number;
   readonly kind: "error" | "aborted";
+  readonly retryable?: true;
 
-  constructor(kind: "error" | "aborted", failure: LlmFailure) {
+  constructor(kind: "error" | "aborted", failure: LlmFailure, retryable = false) {
     super(`dsh model ${kind}: ${failure.message}`);
     this.name = "DshModelError";
     this.kind = kind;
     this.code = failure.code;
     this.providerCode = failure.code;
+    if (retryable) this.retryable = true;
     if (typeof failure.status === "number") this.status = failure.status;
   }
 }
@@ -91,8 +93,10 @@ export interface DshModelBridgeOptions {
    * 显式 config 字段优先于它，它优先于硬编码默认；查询失败传 undefined 即回落。
    */
   resolved?: LlmResolvedModelInfo;
-  /** Main-request admission hook, after preparation and before provider dispatch. */
+  /** Standalone transport hook; production conversation admission is owned by streamRequest. */
   onPreparedRequest?: (prepared: PreparedLlmCall, request: GenerateOptions) => void;
+  /** Host conversation transport; auxiliary/standalone models use the default path. */
+  streamRequest?: (request: GenerateOptions, engineRequest: ModelRequest) => AsyncIterable<StreamChunk>;
   /** 声明给引擎的上下文窗口（进入 `Model.properties.contextWindow`）。 */
   contextWindow?: number;
   /** 声明给引擎的最大输出 token（进入 `Model.optionSpecs.maxOutputTokens.max`）。 */
@@ -440,6 +444,17 @@ export function createDshModelBridge(options: DshModelBridgeOptions): Refreshabl
 
       const streamDsh = async function* (request: ModelRequest): AsyncGenerator<ModelEvent> {
         const { config, generateOptions } = buildDshCall(request);
+        if (options.streamRequest) {
+          const state = emptyStreamState();
+          try {
+            for await (const chunk of options.streamRequest(generateOptions, request)) {
+              const events: ModelEvent[] = [];
+              translateChunk(chunk, state, events);
+              for (const event of events) yield event;
+            }
+          } catch (error) { throw normalizeBridgeError(error); }
+          return;
+        }
         let prepared: PreparedLlmCall;
         try {
           prepared = await options.ctx.llm.prepareCall(config, request.abortSignal);
@@ -478,20 +493,20 @@ export function createDshModelBridge(options: DshModelBridgeOptions): Refreshabl
         },
         async generateText(request): Promise<ModelResult> {
           const { config, generateOptions } = buildDshCall(request);
-          let prepared: PreparedLlmCall;
-          try {
-            prepared = await options.ctx.llm.prepareCall(config, request.abortSignal);
-          } catch (error) {
-            throw normalizeBridgeError(error);
-          }
           const state = emptyStreamState();
           let text = "";
           const reasoning: Array<{ type: "reasoning"; text: string }> = [];
           let finishReason = "stop";
           let usage: ModelUsage = {};
-          const dispatch = withPreparedDefaults(generateOptions, prepared);
-          options.onPreparedRequest?.(prepared, dispatch);
-          for await (const chunk of prepared.stream(dispatch)) {
+          let chunks: AsyncIterable<StreamChunk>;
+          if (options.streamRequest) chunks = options.streamRequest(generateOptions, request);
+          else {
+            const prepared = await options.ctx.llm.prepareCall(config, request.abortSignal).catch(error => { throw normalizeBridgeError(error); });
+            const dispatch = withPreparedDefaults(generateOptions, prepared);
+            options.onPreparedRequest?.(prepared, dispatch);
+            chunks = prepared.stream(dispatch);
+          }
+          for await (const chunk of chunks) {
             const events: ModelEvent[] = [];
             translateChunk(chunk, state, events);
             for (const event of events) {
@@ -551,7 +566,7 @@ function withPreparedDefaults(generateOptions: GenerateOptions, prepared: Prepar
 
 /** 流外的 dsh `LlmError`（含 `failure` 事实）归一化为 `DshModelError`（保 code）。 */
 function normalizeBridgeError(error: unknown): Error {  if (error instanceof DshModelError) return error;
-  const candidate = error as { failure?: unknown } | null;
+  const candidate = error as { failure?: unknown; retryable?: unknown } | null;
   if (
     candidate !== null &&
     typeof candidate === "object" &&
@@ -560,7 +575,7 @@ function normalizeBridgeError(error: unknown): Error {  if (error instanceof Dsh
   ) {
     const failure = candidate.failure as LlmFailure;
     if (typeof failure.code === "string" && typeof failure.message === "string") {
-      return new DshModelError("error", failure);
+      return new DshModelError("error", failure, candidate.retryable === true);
     }
   }
   if (error instanceof Error) return error;

@@ -1,38 +1,21 @@
 /**
- * system-prompt-bridge — dsh system prompt 注入。
- *
- * 任务合同要求"contextBuilder 用最小实现把 dsh `SystemPrompt.assemble()` 结果
- * 注入 system 消息"。现场实测（vendored `runtime/methods/turn.ts` +
- * `context-refresh.ts`）：**注入的 `deps.contextBuilder` 活不过第一个 turn** ——
- * 引擎在每个 turn 开始时 `rebuildContextPrefix()` 无条件用
- * `createContextBuilderFromSnapshot()`（stock ContextBuilder）替换它，custom
- * builder 的 build() 结果永远到不了 provider 请求。
- *
- * 每轮存活的等价接缝是 `AgentRuntimeConfig.systemPrompt`（stock builder 的
- * `customSystemPrompt` 路径，每次 rebuild 都从 `this.config` 重读）：
- * - custom prompt 在场时 stock builder **跳过整个默认动态 system 段**
- *   （identity/dynamic behavior/session guidance/memory/env info/output style/
- *   context management/git context —— 即"禁 ZCode 内建 reminders"）；
- * - 残留的 turn 级 reminder（todo reminder）以工具在场为门，外壳已用
- *   `toolAllowlist: []` 关闭全部内建工具，门不开；
- * - 仍会保留 cli_prefix 身份行（引擎无条件注入，无配置门）——原型接受并在
- *   HANDOFF 声明。
- *
- * 本模块因此提供两条互补件：
- * 1. {@link assembleDshSystemPrompt}：`ctx.systemPrompt.assemble()` →
- *    `renderPrompt()` 的最小装配（dsh 段落即全部 system 内容）；
- * 2. {@link createDshContextBuilder}：最小 ContextBuilder 实现（把同一段文本
- *    作为唯一 system 消息返回）。它只服务引擎构造期的 messageHistory 初始化
- *    （随即被首轮 rebuild 取代——保留它是为了让"注入的是 dsh prompt"这一事实
- *    在构造期也成立，且形状上兑现任务合同的 contextBuilder 最小实现）。
+ * dsh prompt assembly and prepared-route admission.
+ * The exported minimal context builder seeds the engine; production dispatch
+ * commits current dsh instructions/facts and derives messages from its surface.
  */
 import type { Context } from "@deepseek-ai/cordis";
 import type { Agent } from "@deepseek-ai/dsh-agent";
 import { assembleContextFor } from "@deepseek-ai/dsh-agent";
-import type { AssembleContext } from "@deepseek-ai/dsh-system-prompt";
-import { renderPrompt } from "@deepseek-ai/dsh-system-prompt";
+import type { AssembleContext, PromptAssembly } from "@deepseek-ai/dsh-system-prompt";
+import { renderPrompt, renderContextSections, joinContextSections } from "@deepseek-ai/dsh-system-prompt";
+import { createSystemMessage, createUserMessage, type UserMessage, type ContextFormed } from "@deepseek-ai/dsh-llm";
+import { SessionSeq } from "@deepseek-ai/dsh-session";
 
 import type { ContextBuildResult } from "../engine-facade.js";
+
+declare module "@deepseek-ai/dsh-llm" {
+  interface MessageSourceMap { "runtime-context": { kind: "runtime-context" } & ContextFormed }
+}
 
 /** dsh system prompt 的最小装配结果。 */
 export interface DshSystemPromptAssembly {
@@ -83,4 +66,50 @@ export function createDshContextBuilder(assembly: DshSystemPromptAssembly): {
     metaUserAttachments: [],
   });
   return { build };
+}
+
+/** dsh owns dynamic instructions and facts; decisions are committed only after prepareCall. */
+export class DshPromptAdmission {
+  constructor(private readonly ctx: Context, private readonly agent: Agent) {}
+
+  assemble(signal: AbortSignal): Promise<PromptAssembly> {
+    return this.ctx.systemPrompt.assemble(assembleContextFor(this.agent, signal));
+  }
+
+  context(assembly: PromptAssembly, signal: AbortSignal): UserMessage | undefined {
+    const refreshed = this.ctx.systemPrompt.refreshContext(assembly, assembleContextFor(this.agent, signal));
+    const sections = renderContextSections(refreshed);
+    const current = joinContextSections(sections);
+    const previous = this.agent.session.deriveMessages().findLast(message => message.role === "user" && message.source.kind === "runtime-context");
+    if (!previous && !current) return;
+    const text = current || "Current runtime context: none. Earlier runtime-context snapshots no longer apply.";
+    if (previous && JSON.stringify(previous.content) === JSON.stringify([{ type: "text", text }])) return;
+    return createUserMessage({ content: [{ type: "text", text }], source: sections.length
+      ? { kind: "runtime-context", form: "snapshot", sections } : { kind: "runtime-context" } });
+  }
+
+  commit(assembly: PromptAssembly, position: { turn: number; step: number }, inHistory: boolean, startsSeries: boolean): void {
+    const session = this.agent.session;
+    const text = renderPrompt(assembly);
+    const nodes = session.surface.nodes.flatMap(seq => {
+      const event = session.eventAt(seq);
+      return event?.type === "system/message" ? [{ seq, message: event.data.message }] : [];
+    });
+    const head = nodes[0];
+    const textOf = (message: { content: readonly unknown[] }) => message.content.length === 0 ? "" :
+      message.content.map(block => (block as { text?: string }).text ?? "").join("");
+    const replace = (seq: number, next: string) => session.append("system/message", { ...position, message: createSystemMessage(next) }, {
+      surfaceOp: { op: "replace", startSeq: SessionSeq(seq), endSeq: SessionSeq(seq) }, sourceEventSeqs: [SessionSeq(seq)],
+    });
+    if (!head) {
+      session.append("system/message", { ...position, message: createSystemMessage(text) }, { surfaceOp: "append" });
+      return;
+    }
+    if (!inHistory || startsSeries || !text) {
+      for (const node of nodes.slice(1)) if (textOf(node.message)) replace(node.seq, "");
+      if (textOf(head.message) !== text) replace(head.seq, text);
+    } else if (textOf(nodes.findLast(node => textOf(node.message))?.message ?? head.message) !== text) {
+      session.append("system/message", { ...position, message: createSystemMessage(text) }, { surfaceOp: "append" });
+    }
+  }
 }

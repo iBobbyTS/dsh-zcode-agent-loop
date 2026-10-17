@@ -95,7 +95,7 @@ trace、bundle），可直接肉眼检查。
   create/update_goal + goal-round-driver 自动续轮 + todo_write 全链走通——
   依赖三件桥接：user/message producer source 保真、turnBoundary 投影重挂、
   drain 的 initiator 边界（详见 CAPABILITIES.md §2 goal 族行）。已知边界：
-  本插件现在于 claimed-turn admission 调用 `agent/pre-step`，遵守拒绝、消息变换和 series 标记；完整 per-step middleware / 外部 host 压缩同步仍未建立；一个 turn claim 多条消息时 surface 逐条落、引擎拿
+  本插件已在每个模型步骤执行 `agent/pre-step`，接入 request/request-error，遵守拒绝、消息变换和 series 标记；请求与恢复使用有效 dsh surface，压缩归 dsh；一个 turn claim 多条消息时 surface 逐条落、引擎拿
   join 后单条文本（stock surface 一致，resume 水合为多条连续 user 消息）。
 - **steering 真语义已支持**（阶段 6）：turn 进行中发送经 `agent.steer` 内联当前轮
   （引擎 `steerTurn` guide），空闲时安全降级排队；inbox live 事件全词表已发。
@@ -106,11 +106,10 @@ trace、bundle），可直接肉眼检查。
   同批次接入：逐字流式（live `agent/assistant-stream`）、logger（stderr 双投递 +
   dropStats 打点）、会话内换模型/换档（`model/selection` 监听）、压缩可观测 +
   sidecar 隔离门。
-- system prompt 每 agent 装配一次（构造期），非每 turn 重装配；`{{model}}` 变量
-  渲染于装配时点、不随会话内换模型热更；headless persona 的静态化见 overlay。
-- createAgent 错误路径若在 tool/call 未解析时结束 turn，durable log 会被严格
-  读取端拒绝（stock 用 TOOL_NOT_STARTED repair 事件处理；原型接受，happy path
-  已验证）。
+- system prompt 每模型步骤按 agent scope 装配，prepared route 决定更新、清空与
+  runtime-context 注入；引擎 CLI prefix 不再进入生产 provider 请求。
+- 错误／取消路径已补工具结果恢复、可见文本保留和单调 dsh turn 身份；
+  步骤、部分流、flush 失败及真实进程崩溃恢复均有严格 v4 读回验证。
 - `dsh web` 完整投影喂饱、升级 drill、golden round-trip 快照：PLAN 排除项。
 - 模型能力元数据：contextWindow / 输入模态(text) / 推理档位 / maxOutputTokens 已从
   dsh `resolveModelInfo` 真实来源取值（取值链与断言见 `scripts/projection-integration.ts`

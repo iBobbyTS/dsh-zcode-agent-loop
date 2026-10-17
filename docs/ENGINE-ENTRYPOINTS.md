@@ -1,6 +1,6 @@
 # ZCode 能力入口统计
 
-后续统计与维护方式见 [完整接入计划](INTEGRATION-PLAN.md)：由 Codex 负责语义判断和任务，脚本生成入口与变化证据。现有逐项签名清单是迁移前的基线，仍如实报告当前状态；T01 将移除手填 SHA/wiring 的维护方式。
+统计与维护方式见 [完整接入计划](INTEGRATION-PLAN.md)：由 Codex 负责语义判断和任务，脚本生成入口与变化证据。用户不维护字段表、SHA 或 wiring。
 
 `pnpm verify:contracts` 同时输出两项独立结论：**执行过的场景差分**与**引擎能力接入状态**。三个场景的 `bridge-gap: 0` 不能作为全量桥接缺口数；当前总状态为 `INCOMPLETE`。
 
@@ -11,6 +11,8 @@ pnpm verify:contracts --strict-integration
 pnpm verify:capabilities
 pnpm verify:capabilities --strict-integration
 pnpm verify:capabilities:selftest
+# Codex 处理差异并验证行为后，记录当前生成快照；不是验收通过命令：
+pnpm verify:capabilities --record-snapshot
 ```
 
 默认报告目录为 `.agent-work/tmp/contract-classification/report/`。入口总览在 `index.html`，完整能力分组、逐条声明、签名指纹、生产接缝与来源位置在 `capabilities.html` / `capabilities.json`，另有 `capabilities.md`。独立能力命令只刷新 `capabilities.*`；场景总览需运行组合命令刷新。
@@ -25,7 +27,7 @@ TypeScript AST 从当前 vendor 源码机械提取：
 - `MemoryRuntimeConfig` / `AutoCompactPolicyConfig` 字段；
 - `builtInTools` 注册清单的工具条目。
 
-这是接口、配置、端口、工具的条目统计，**不是独立功能数量**。分组及处置依据存于 `scripts/contract-verification/capabilities.json`；扫描器不会靠名称猜测语义，也不会根据场景通过自动填写“已接通”。
+这是接口、配置、端口、工具的条目统计，**不是独立功能数量**。分组及处置依据存于 `scripts/contract-verification/capabilities.json`，其中只有语义归属、成员名和证据。声明签名、生产接线、相关类型、实现体及版本/profile 指纹全部由脚本生成至 `capabilities.snapshot.json`，不再手填哈希。扫描器不会靠名称猜测语义，也不会根据场景通过自动填写“已接通”。
 
 | 分类 | 含义 |
 | --- | --- |
@@ -42,7 +44,9 @@ TypeScript AST 从当前 vendor 源码机械提取：
 
 ## 漂移与退出码
 
-每个已分类条目绑定其声明签名 SHA256；生产 `runtime.*` 调用和 `createEmbeddedEngine` 装配语法也有指纹。新增条目、删除条目、签名变化或生产接缝变化会显式报错；重复归类、丢失来源文本也会失败。行号移动不会使声明指纹变化。新入口落地后，应更新**对应分组及证据**，不能批量把新发现归为有意差异或替代。
+脚本比较生成快照中的声明、接线与源码；新增／删除／签名变化、相关类型或实现体变化、宿主/profile/依赖锁变化均显式报告。重复归类、丢失来源文本也会失败。类型和实现采用去注释 AST 指纹，单纯行号或空白移动不会造成声明／实现漂移。
+
+Codex 查看差异、补实现或说明、运行相关验收，再用 `--record-snapshot` 更新生成物。这个命令不修改语义归属、不运行场景、不补验收记录；新 API 没有归属仍是 unknown，不能靠刷新快照变绿。语义判断和待办由 Codex 维护。
 
 | 退出码 | 含义 |
 | --- | --- |
@@ -54,6 +58,8 @@ TypeScript AST 从当前 vendor 源码机械提取：
 
 ## 边界
 
-这是最小静态入口盘点，不是全程序可达性证明。扫描不穷举内部函数、递归展开所有外部引用类型或推断任意别名/动态反射调用；生产接缝定位针对当前使用的 `runtime.*` 与 `createEmbeddedEngine` 形态。内联配置变化会改变签名，memory/compact 引用配置单独展开，其余引用类型的内部变化仍需专项检查。源码实现体变化和运行期插件激活也不由签名分类证明。
+这是静态盘点与变化雷达，不是全程序可达性证明。额外扫描本桥及所消费的 core/contracts/shared/shared-types/dynamic-workflow/CUA 包源码内的接口、类型别名、枚举及实现文件；返回类型或引用类型变化可从该层发现，不增加“功能已接入”计数。新依赖的源码范围仍需由 Codex 在升级报告中确认，依赖锁变化会先报出。
+
+生产接缝定位针对当前使用的 `runtime.*` 与 `createEmbeddedEngine` 形态，不能推断任意别名或反射；实现变化只是待处理证据，不证明改变了行为。实际插件激活和用户功能仍需运行场景验证。
 
 行为覆盖仍由原来的场景、consumer 回归和浏览器验收单独提供。两项统计共同展示，任何一项都不能代替另一项。

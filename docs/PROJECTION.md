@@ -1,5 +1,7 @@
 # 事件投影层：引擎 SessionEvent → dsh SessionEvent（zcode-loop 桥接现状）
 
+2026-10-17 接入更新：生产请求已改为逐步宿主准入后从有效 dsh surface 派生；ZCode 自动/微压缩关闭，压缩事务由 dsh 承担。另补部分流恢复锚点、失败 attempt、取消文本和未结算工具结果投影。下方分类数量是早期快照的历史说明，不是当前全量状态；当前实现与验收以 [接入计划进度](INTEGRATION-PLAN.md) 及生成报告为准。
+
 本文档覆盖**事件投影层**：vendored ZCode 引擎的 `SessionEventType`（84 种）中，
 哪些被 `src/bridges/event-store-bridge.ts` 翻译成合法 dsh SessionEvent 落进
 `session.v4.jsonl`，哪些被丢弃、丢弃是否有损失。它是「**哪些引擎行为 dsh 日志与

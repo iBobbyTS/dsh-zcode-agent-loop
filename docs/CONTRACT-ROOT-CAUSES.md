@@ -43,7 +43,7 @@ Unknown semantic fields always win over positional explanations. The status self
 
 ## Coverage limits
 
-The shared mock fixture exercises only basic-text, todo-tool and goal-round. Unexercised profile families and static obligations remain partial; no report PASS means full engine or full profile parity. Claimed-turn admission is not complete per-model-step host middleware parity. Synchronization of externally compacted/replaced host history into the embedded engine, broad compact/side paths, rewind/checkpoint/rollback/memory and other deployed plugin families remain unproved.
+The shared differential fixture exercises only basic-text, todo-tool and goal-round. Separate step-boundary, history-compaction and crash-recovery probes now cover per-step middleware, prepared admission, partial-stream recovery, active-surface synchronization and durability. Unexercised profile families and static obligations remain partial; no report PASS means full engine or full profile parity. Media/offload combinations, broad side paths, rewind/file rollback/memory and other deployed plugin families still follow [the integration tasks](INTEGRATION-PLAN.md).
 
 ## Historical authority and immutability
 

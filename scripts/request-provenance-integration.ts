@@ -79,12 +79,12 @@ async function pluginProbe(streaming: boolean): Promise<void> {
     let preStep = 0;
     const admittedTurns: number[] = [];
     const transformed = createUserMessage({ content: [{ type: "text", text: "transformed pre-step input" }], source: { kind: "user" } });
-    const offPreStep = agent.ctx.on("agent/pre-step", async ({ turn }, next) => {
+    const offPreStep = agent.ctx.on("agent/pre-step", async ({ turn, step }, next) => {
       preStep += 1;
       if (preStep === 1) return { kind: "reject" as const };
-      admittedTurns.push(turn);
+      if (step === 1) admittedTurns.push(turn);
       const decision = await next();
-      return decision.kind === "reject" ? decision : { ...decision, messages: [transformed], startsRequestSeries: true as const };
+      return decision.kind === "reject" || step !== 1 ? decision : { ...decision, messages: [transformed], startsRequestSeries: true as const };
     });
     agent.followup(createUserMessage({ content: [{ type: "text", text: "reject this turn" }], source: { kind: "user" } }));
     await agent.whenIdle();
@@ -100,8 +100,8 @@ async function pluginProbe(streaming: boolean): Promise<void> {
     };
     await run("scoped_probe");
     offPreStep();
-    assert.deepEqual(admittedTurns, [1], "rejected admission must not shift the next engine turn");
-    assert.deepEqual(agent.session.snapshotEvents().filter((event) => event.type === "turn/start").map((event) => event.data.turn), [1]);
+    assert.deepEqual(admittedTurns, [2], "a blocked dsh turn still owns its durable turn identity");
+    assert.deepEqual(agent.session.snapshotEvents().filter((event) => event.type === "turn/start").map((event) => event.data.turn), [1, 2]);
     assert(adapter.requests[0]!.messages.some((message) => message.role === "user" && JSON.stringify(message.content).includes("transformed pre-step input")));
     assert(agent.session.snapshotEvents().some((event) => event.type === "user/message" && event.data.id === transformed.id));
     assert.equal(headerEvents(agent.session)[0]?.data.startsSeries, true, "pre-step series flag must reach the header");
