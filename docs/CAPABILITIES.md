@@ -73,6 +73,10 @@ dsh 插件（`src/`）中的桥接现状。覆盖**引擎能力层**；姊妹篇
 | 待发队列（编辑/重排/删除） | 引擎 pending-input 队列全套 API | `core/src/runtime/command-queue.ts` + pendingInput 系列方法 | 插件 `src/inbox.ts`（`ZcodeLoopInbox` 自实现 append/prepend/replace/remove/splice，落 `agent/inbox/spliced`） | 插件 inbox 即 dsh `Inbox` 接口实现 | 不需要·dsh 等价 | inbox 接口成员全实现；live 事件（阶段 6 已发）；next-step 语义有生产者（steer/inject） |
 | followup 模式（queue/guide）/ 自动排水 | `setFollowupMode` / `setQueueAutoDrain` | `core/src/runtime/methods/runtime-command-*.ts` | 未接 | 无 | 不需要·边缘 | 插件自管 drain 循环 |
 | 输入准入 | `admitPrompt` 交互准入票据 | `core/src/runtime/methods/prompt-admission.ts` | 未接 | 无 | 不需要·边缘 | 宿主交互形态；插件 inbox 承担输入面 |
+| user/message source 保真 | producer source（user/goal/scheduler…）随消息落 surface | —（stock loop 逐条 append 原消息对象） | 阶段 8a：claim 批原消息经 `setPendingUserMessages` 透传，`model_request` 逐条落盘（steering 路径同款直接 append 原消息）；无批回退引擎 text 重建 `{kind:"user"}` | — | 已桥接·完整 | goal 续轮（round driver 预约校验按 source/goalId/round 匹配）依赖此保真；s05 AC1/AC2/AC4 回归 |
+| turnBoundary 投影 | goal 工具开轮边界 authority（`stateOf(session,"turnBoundary")`） | —（stock 由 agent-loop 注册 `turnBoundaryProjectionDefinition`） | 阶段 8b：`src/index.ts` 重挂同语义投影（纯 turn/step 事件解释，运行时 `ctx.inject` 可选注册——host 回归面无 sessionProjections 服务时跳过） | dsh-session-projection | 已桥接·完整 | 容器 probe 实测：缺它 create_goal 拒绝 "goal tools require an open model turn" |
+| initiator 边界 | `ctx.agents.currentInitiator()`（AsyncLocalStorage） | —（stock `withInitiator(this, kick)`） | 阶段 8b：drain 包 `runWithInitiator`（`withInitiator(agent, drain)`） | dsh-agent | 已桥接·完整 | goal 工具 authority 的第三要素；probe 实测无 GOAL_TOOL_* 拒绝 |
+| dsh goal 工具链 | create/get/update_goal + goal-round-driver 自动续轮 + todo_write | —（全在 dsh 层） | 工具经桥同步（todo_write/get_goal/create_goal/update_goal）；续轮 = followup(goal-source 消息) 走 inbox→drain 正常通路 | dsh-goal / dsh-goal-round-driver / dsh-tool-goal / dsh-tool-todo | 已桥接·完整（阶段 8 实测） | 容器 probe（真插件+mock adapter，非真实 LLM）：续轮真实发生（4 请求恰量）、goal-source user/message 落盘、goal 达 complete、todo/write 落盘、turn ×2；已知边界：本插件不发 `agent/pre-step`，goal 驱动器对无效轮的 fail-closed 拦截不生效（happy path 不受影响）；宿主装配 dsh-tool-* 需先有 sessionProjections 服务，否则插件 inject 挂起不注册工具 |
 
 ## 3. 工具系统
 

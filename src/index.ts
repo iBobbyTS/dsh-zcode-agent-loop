@@ -63,7 +63,8 @@ import type {
   SessionEvent,
   SessionId as DshSessionId,
 } from "@deepseek-ai/dsh-session";
-import { foldRequestHeader, interruptedTurnClosers, SessionLogOffset } from "@deepseek-ai/dsh-session";
+import { foldRequestHeader, interruptedTurnClosers, SessionLogOffset, SessionSeq } from "@deepseek-ai/dsh-session";
+import { z as zod } from "zod";
 
 import { ZcodeLoopAgent } from "./agent.js";
 import type { ZcodeLoopAgentDeps } from "./agent.js";
@@ -173,6 +174,65 @@ function hasSeedHistory(seed: readonly SessionEvent[] | undefined): boolean {
 }
 
 /**
+ * stock agent-loop 的 turnBoundary 投影（阶段 8b 重挂，语义逐字对齐 stock
+ * `turnBoundaryProjectionDefinition`）：goal 工具族的开轮边界 authority 读
+ * `stateOf(session, "turnBoundary")`，key 缺席即拒绝 "goal tools require an
+ * open model turn"。桥已忠实落 turn/start|end 与 step/start|end，纯事件
+ * 解释在此重挂即可（host 回归面没有 sessionProjections 服务时不注册）。
+ */
+const turnBoundaryProjectionDefinition = {
+  key: "turnBoundary",
+  stateVersion: 2,
+  stateSchema: zod.object({
+    openTurnStartSeq: zod.number().int().nonnegative().transform(SessionSeq).nullable(),
+    lastStepStartSeq: zod.number().int().nonnegative().transform(SessionSeq).nullable(),
+    lastStepBoundary: zod
+      .object({
+        kind: zod.union([zod.literal("start"), zod.literal("end")]),
+        seq: zod.number().int().nonnegative().transform(SessionSeq),
+      })
+      .nullable(),
+    lastTurn: zod.number().int().nonnegative(),
+  }),
+  init: () => ({
+    openTurnStartSeq: null,
+    lastStepStartSeq: null,
+    lastStepBoundary: null,
+    lastTurn: 0,
+  }),
+  apply: (
+    state: {
+      openTurnStartSeq: number | null;
+      lastStepStartSeq: number | null;
+      lastStepBoundary: { kind: "start" | "end"; seq: number } | null;
+      lastTurn: number;
+    },
+    event: { type: string; seq: number; data: { turn?: number } },
+  ) => {
+    switch (event.type) {
+      case "turn/start":
+        return {
+          ...state,
+          openTurnStartSeq: event.seq,
+          lastTurn: event.data.turn ?? state.lastTurn,
+        };
+      case "turn/end":
+        return { ...state, openTurnStartSeq: null };
+      case "step/start":
+        return {
+          ...state,
+          lastStepStartSeq: event.seq,
+          lastStepBoundary: { kind: "start", seq: event.seq },
+        };
+      case "step/end":
+        return { ...state, lastStepBoundary: { kind: "end", seq: event.seq } };
+      default:
+        return state;
+    }
+  },
+};
+
+/**
  * 替换 stock agent-loop 的 zcode loop 工厂。
  * inject 与 stock AgentLoop 对齐（少 sessionProjections：inbox 最小重写不挂投影）。
  */
@@ -207,6 +267,16 @@ export class ZcodeLoop extends Service implements AgentFactory {
     // 与 stock AgentLoop 相同的两个 prompt 变量（persona 段可能引用）。
     ctx.systemPrompt.variable("provider", (context) => context.agent?.options.provider);
     ctx.systemPrompt.variable("model", (context) => context.agent?.options.model);
+    // 阶段 8b：turnBoundary 投影可选注册（goal 工具开轮边界 authority 依赖；
+    // stock 由 agent-loop 注册，本插件顶替其位）。运行时 inject 而非 static
+    // inject——host 回归面没装 dsh-session-projection，声明成硬依赖会把插件
+    // 挂起；服务缺席时回调不跑，goal 工具在那儿本就缺席，行为不变。
+    ctx.inject(["sessionProjections"], () => {
+      const projections = ctx.get("sessionProjections") as unknown as {
+        register(definition: unknown): () => void;
+      } | undefined;
+      projections?.register(turnBoundaryProjectionDefinition);
+    });
   }
 
   async createAgent(ownerCtx: Context, options: CreateAgentOptions): Promise<AgentHandle> {
@@ -431,6 +501,9 @@ export class ZcodeLoop extends Service implements AgentFactory {
         // 打点出口（agent 自身无 logger，经同一 dshLogger 进 dsh 日志面）。
         eventBridge,
         logDebug: (message, context) => dshLogger.debug(message, context),
+        // 阶段 8b：drain 的 initiator 边界（goal 工具 authority 的
+        // currentInitiator 校验；stock loop 的 withInitiator(kick) 同款）。
+        runWithInitiator: (operation) => this.loopCtx.agents.withInitiator(agent, operation),
       };
       const agent = (created = new ZcodeLoopAgent(
         this.loopCtx,

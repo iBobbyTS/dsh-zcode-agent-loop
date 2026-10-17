@@ -28,7 +28,7 @@ UI 永远看不到**」的契约清单。
 | 引擎事件 | 桥的翻译 | dsh 落盘事件 |
 |---|---|---|
 | `turn_started` | 记 turn、user 文本暂存 | `turn/start` |
-| `model_request` | 上一步缓冲落定 + 开新步；首个请求落 system（前导 system 拼接为一条） | `step/end`(若有) → `step/start` → `system/message`(仅首个) → `user/message` → `request/header` |
+| `model_request` | 上一步缓冲落定 + 开新步；首个请求落 system（前导 system 拼接为一条）；user/message 落盘**优先用 claim 批原消息**（producer source 保真，阶段 8a），无批时回退引擎 text 重建 `{kind:"user"}` | `step/end`(若有) → `step/start` → `system/message`(仅首个) → `user/message` → `request/header` |
 | `model_streaming` | 不直接落盘；累积为紧凑流 | （折进 `assistant/message` 的 `stream` 字段） |
 | `model_complete` | 缓冲 assistant | （等工具调度或下一边界 flush 成 `assistant/message`） |
 | `tool_call_scheduled` | 缓冲 assistant（含 tool-call 块）先落定 | `assistant/message` → `tool/call` |

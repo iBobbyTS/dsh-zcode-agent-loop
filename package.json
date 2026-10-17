@@ -24,6 +24,7 @@
     "verify:s02": "tsx scripts/s02-integration.ts",
     "verify:s03": "tsx scripts/s03-integration.ts",
     "verify:s04": "node scripts/smoke.mjs",
+    "verify:s05": "tsx scripts/s05-integration.ts",
     "verify": "pnpm verify:facade && pnpm cold-start"
   },
   "dependencies": {

@@ -87,6 +87,13 @@ trace、bundle），可直接肉眼检查。
 ## 已知边界（原型范围）
 
 - subagent 桥、spill 不做。
+- **dsh goal 工具链已实测可用**（阶段 8，容器 probe：真插件 + mock LLM）：
+  create/update_goal + goal-round-driver 自动续轮 + todo_write 全链走通——
+  依赖三件桥接：user/message producer source 保真、turnBoundary 投影重挂、
+  drain 的 initiator 边界（详见 CAPABILITIES.md §2 goal 族行）。已知边界：
+  本插件不发 `agent/pre-step`，goal 驱动器对无效续轮的 fail-closed 拦截不生效
+  （happy path 不受影响）；一个 turn claim 多条消息时 surface 逐条落、引擎拿
+  join 后单条文本（stock surface 一致，resume 水合为多条连续 user 消息）。
 - **steering 真语义已支持**（阶段 6）：turn 进行中发送经 `agent.steer` 内联当前轮
   （引擎 `steerTurn` guide），空闲时安全降级排队；inbox live 事件全词表已发。
 - **resume / fork 已支持**（2026-10-17 桥接批次）：冷重启后旧会话可续聊（最小

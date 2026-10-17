@@ -28,6 +28,7 @@ import type {
   ContentBlock,
   StreamChunk,
   TokenUsage,
+  UserMessage,
 } from "@deepseek-ai/dsh-llm";
 import {
   AssistantStreamAccumulator,
@@ -338,6 +339,8 @@ export class DshSessionEventStoreBridge implements SessionEventStorePort {
   /** dsh `step/start` 已落、`step/end` 未落（v4 关系校验要求消息类事件在 open step 内）。 */
   private stepOpen = false;
   private pendingUserText: string | undefined;
+  /** 本 turn claim 的原始消息批（agent drain 注入，见 setPendingUserMessages）。 */
+  private pendingUserMessages: readonly UserMessage[] | undefined;
   private pendingAssistant: PendingAssistant | undefined;
   private openBlock: OpenBlock | undefined;
   private nextBlockIndex = -1;
@@ -397,6 +400,15 @@ export class DshSessionEventStoreBridge implements SessionEventStorePort {
    */
   setStreamPublisher(publish: (frame: AssistantStreamFrame) => void): void {
     this.streamPublisher = publish;
+  }
+
+  /**
+   * 注入本 turn claim 的原始 user 消息批（agent.drain 在 executeTurn 前调用）：
+   * translateModelRequest 落盘时逐条 append 原消息对象（producer source 保真，
+   * stock 逐条语义）；turn 收口由 translateTurnComplete/Error 清理。
+   */
+  setPendingUserMessages(messages: readonly UserMessage[] | undefined): void {
+    this.pendingUserMessages = messages;
   }
 
   /** 翻译统计快照（AC：丢弃可见、会话不炸）。 */
@@ -593,7 +605,8 @@ export class DshSessionEventStoreBridge implements SessionEventStorePort {
     this.options.session.append("turn/start", { turn: this.dshTurn(turn) });
     // user/message 等首个 model_request 再落：system/message 必须是 surface 节点 0，
     // 而引擎在 turn_started 才给出 input、首个 model_request 才给出 system prompt。
-    this.pendingUserText = payload.input;
+    // claim 批在场（agent drain 注入）时不缓冲 text——批为权威，防双写。
+    this.pendingUserText = this.pendingUserMessages !== undefined ? undefined : payload.input;
   }
 
   private translateModelRequest(payload: ModelRequestPayload): void {
@@ -642,7 +655,15 @@ export class DshSessionEventStoreBridge implements SessionEventStorePort {
         this.systemMessageLogged = true;
       }
     }
-    if (this.pendingUserText !== undefined) {
+    if (this.pendingUserMessages !== undefined && this.pendingUserMessages.length > 0) {
+      // claim 批在场：逐条 append 原消息对象（producer source 与原始 content 块
+      // 保真，stock 同款逐条语义——goal 续轮等非人类 producer 的入口）。
+      for (const message of this.pendingUserMessages) {
+        this.options.session.append("user/message", message, { surfaceOp: "append" });
+      }
+      this.pendingUserMessages = undefined;
+    } else if (this.pendingUserText !== undefined) {
+      // 引擎 text 输入（resume 后首轮等无批场景）回退：重建为人类轮 {kind:"user"}。
       this.options.session.append(
         "user/message",
         createUserMessage({
@@ -1026,6 +1047,8 @@ export class DshSessionEventStoreBridge implements SessionEventStorePort {
     const turn = this.requireTurn();
     if (turn === undefined) return;
     this.flushPendingAssistant();
+    // turn 收口清理：未被本 turn 消费的 claim 批（未到 model_request）不得泄漏到下一 turn。
+    this.pendingUserMessages = undefined;
     // v4 关系校验：turn/end 前不允许 open step（消息类事件已在其内落定）。
     if (this.stepOpen) {
       this.options.session.append("step/end", { turn: this.dshTurn(turn), step: this.step });
@@ -1038,6 +1061,8 @@ export class DshSessionEventStoreBridge implements SessionEventStorePort {
     const turn = this.requireTurn();
     if (turn === undefined) return;
     this.flushPendingAssistant();
+    // turn 收口清理：未被本 turn 消费的 claim 批（未到 model_request）不得泄漏到下一 turn。
+    this.pendingUserMessages = undefined;
     // v4 关系校验：turn/end 前不允许 open step。（错误路径若还有未解析的
     // tool/call，durable 读取会拒绝——原型接受，见 S04 报告缺口。）
     if (this.stepOpen) {

@@ -33,7 +33,6 @@ import type {
 import { agentEvents } from "@deepseek-ai/dsh-agent";
 import { createScope } from "@deepseek-ai/dsh-scope";
 import type { Scope } from "@deepseek-ai/dsh-scope";
-import { createUserMessage } from "@deepseek-ai/dsh-llm";
 import type { UserMessage } from "@deepseek-ai/dsh-session";
 import type { Session as DshSession, SessionId as DshSessionId } from "@deepseek-ai/dsh-session";
 
@@ -57,6 +56,13 @@ export interface ZcodeLoopAgentDeps {
    * 所有），由 index.ts 传 `(m, c) => dshLogger.debug(m, c)`；缺席时打点静默跳过。
    */
   logDebug?: (message: string, context?: Record<string, unknown>) => void;
+  /**
+   * 阶段 8b：把 drain 包进 dsh agents 的 initiator 边界（AsyncLocalStorage，
+   * stock loop 的 `withInitiator(this, () => this.kick())` 同款）。goal 工具族
+   * 执行期 authority 校验要求 `currentInitiator() === agent`；缺席时跳过包装
+   * （host probe 无 goal 插件场景不受影响）。
+   */
+  runWithInitiator?: (operation: () => Promise<void>) => Promise<void>;
 }
 
 type Phase = { kind: "idle" } | { kind: "busy" };
@@ -173,17 +179,11 @@ export class ZcodeLoopAgent implements Agent {
     if (claimed.length === 0) return false;
     for (const claimedMessage of claimed) {
       // 3) surface 落盘（stock 对齐：steering 输入对 dsh surface 可见）。busy
-      //    时 open turn 已在场（turn/start 已落），直接 append 合法；文本用
-      //    userMessageText 投影（非 text 块占位）。
+      //    时 open turn 已在场（turn/start 已落），直接 append 合法；阶段 8a
+      //    起落 claim 的原消息对象（producer source 与原始 content 块保真，
+      //    不再重建 {kind:"user"}）。text 只作引擎侧输入投影（非 text 块占位）。
       const text = userMessageText(claimedMessage);
-      this.session.append(
-        "user/message",
-        createUserMessage({
-          content: [{ type: "text", text }],
-          source: { kind: "user" },
-        }),
-        { surfaceOp: "append" },
-      );
+      this.session.append("user/message", claimedMessage, { surfaceOp: "append" });
       // 4) 喂引擎：delivery "guide" = 对进行中工作的补充引导，内联当前轮不切
       //    轮（next-step 语义）。steer()/inject() 是同步契约——promise 必须
       //    void 吞错：accepted 无事可做；rejected（no_active_turn 等空闲竞态/
@@ -269,7 +269,9 @@ export class ZcodeLoopAgent implements Agent {
   /** idle 时启动 drain；busy 中到达的输入由循环下一轮 claim。 */
   private wake(): void {
     if (this.phase.kind !== "idle" || !this.inbox.hasPending) return;
-    const run = this.drain();
+    // 阶段 8b：drain 包进 initiator 边界（goal 工具 authority 依赖
+    // currentInitiator；stock loop 同款包装）。
+    const run = this.deps.runWithInitiator?.(() => this.drain()) ?? this.drain();
     this.activity = this.activity.then(
       () => run,
       () => run,
@@ -283,6 +285,9 @@ export class ZcodeLoopAgent implements Agent {
         const turn = ++this.turnCounter;
         const batch = this.inbox.claim("next-turn", turn);
         if (batch.length === 0) break;
+        // 阶段 8a：claim 的原始消息批交给事件桥——model_request 落盘时逐条
+        // append 原消息对象（producer source 保真）；turn 收口由桥自清。
+        this.deps.eventBridge?.setPendingUserMessages(batch);
         // 任务合同：每 turn 前把 ctx.tools 的 schemas 同步进 ZCode registry。
         this.deps.toolBridge.syncTools();
         const input = batch.map(userMessageText).join("\n\n");
