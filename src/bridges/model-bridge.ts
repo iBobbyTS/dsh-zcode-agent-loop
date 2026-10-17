@@ -19,6 +19,7 @@ import type {
   FinishReason,
   GenerateOptions,
   LlmFailure,
+  LlmResolvedModelInfo,
   PreparedLlmCall,
   RequestMessage,
   StreamChunk,
@@ -31,6 +32,7 @@ import {
   createSystemMessage,
   createToolResultMessage,
   createUserMessage,
+  ReasoningEffortId,
   ToolCallId,
 } from "@deepseek-ai/dsh-llm";
 
@@ -76,6 +78,11 @@ export interface DshModelBridgeOptions {
   provider?: string;
   /** dsh model id；缺省用引擎 selection.modelId。 */
   model?: string;
+  /**
+   * 装配期 `ctx.llm.resolveModelInfo(provider, model)` 的结果（dsh 路由真实元数据）。
+   * 显式 config 字段优先于它，它优先于硬编码默认；查询失败传 undefined 即回落。
+   */
+  resolved?: LlmResolvedModelInfo;
   /** 声明给引擎的上下文窗口（进入 `Model.properties.contextWindow`）。 */
   contextWindow?: number;
   /** 声明给引擎的最大输出 token（进入 `Model.optionSpecs.maxOutputTokens.max`）。 */
@@ -85,13 +92,22 @@ export interface DshModelBridgeOptions {
 const DEFAULT_CONTEXT_WINDOW = 200_000;
 const DEFAULT_MAX_OUTPUT_TOKENS = 32_000;
 
-function bridgeModelProperties(contextWindow: number): ModelProperties {
+/**
+ * 图片数据通路尚未落地：消息翻译只投影文本（`blockToText` 丢弃 image 块），
+ * inbox/session 的 attachments 也未桥接（docs/GAPS.md）。通路补齐前即便
+ * dsh 路由声明了 image 输入，也不向引擎放行，避免引擎保留图片块后被桥静默丢弃。
+ */
+const IMAGE_DATA_PATH_ENABLED = false;
+
+function bridgeModelProperties(contextWindow: number, resolved?: LlmResolvedModelInfo): ModelProperties {
+  const modalities = resolved?.inputModalities;
   return {
     requiresMfjsToolSchema: false,
     contextWindow,
     inputFormat: {
       supportsText: true,
-      supportsImage: false,
+      supportsImage: IMAGE_DATA_PATH_ENABLED && (modalities?.includes("image") ?? false),
+      // dsh 模态词表只有 text/image；video/audio/pdf 无来源，恒 false（docs/GAPS.md）。
       supportsVideo: false,
       supportsAudio: false,
       supportsPdf: false,
@@ -100,7 +116,7 @@ function bridgeModelProperties(contextWindow: number): ModelProperties {
     supportsToolCall: true,
     supportsJsonSchemaOutput: false,
     supportsNativeWebSearch: false,
-    supportsMidConversationSystem: false,
+    supportsMidConversationSystem: resolved?.systemPromptUpdate === "in-history",
   };
 }
 
@@ -317,76 +333,66 @@ function translateChunk(chunk: StreamChunk, state: StreamTranslateState, out: Mo
  * `prepared.stream` 恰好分发一次；桥不做任何缓存或路由决策。
  */
 export function createDshModelBridge(options: DshModelBridgeOptions): RuntimeModelFactory {
-  const contextWindow = options.contextWindow ?? DEFAULT_CONTEXT_WINDOW;
-  const maxOutputTokensCap = options.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS;
-  const properties = bridgeModelProperties(contextWindow);
+  const contextWindow =
+    options.contextWindow ?? options.resolved?.context?.contextWindow ?? DEFAULT_CONTEXT_WINDOW;
+  const maxOutputTokensCap =
+    options.maxOutputTokens ?? options.resolved?.defaultMaxTokens ?? DEFAULT_MAX_OUTPUT_TOKENS;
+  const properties = bridgeModelProperties(contextWindow, options.resolved);
+  const reasoningValues = options.resolved?.reasoning?.efforts
+    ?.map((effort) => effort.id)
+    .filter((id) => id.length > 0);
+  // schema 要求档位非空且不重复；dsh 目录缺席时回落单档 "disabled"（不选即不发 effort）。
+  const effectiveReasoningValues =
+    reasoningValues !== undefined && reasoningValues.length > 0 ? [...new Set(reasoningValues)] : ["disabled"];
 
   return (input): Model => {
     const provider = options.provider ?? input.selection.providerId;
     const modelId = options.model ?? input.selection.modelId;
     const baseOptions: ModelOptions = { ...input.selection.options };
 
-    /** ZCode 请求 → dsh 请求；call-config 字段（provider/model/maxTokens）两侧一致。 */
-    const buildDshCall = (request: ModelRequest): {
-      config: { provider: string; model: string; maxTokens?: number };
-      generateOptions: GenerateOptions;
-    } => {
-      const maxTokens = request.options?.maxOutputTokens;
-      const tools = translateToolsToDsh(request.tools);
-      return {
+    const createModel = (currentOptions: ModelOptions): Model => {
+      /**
+       * ZCode 请求 → dsh 请求；call-config 字段（provider/model/maxTokens/reasoningEffort）
+       * 两侧严格一致（否则 dsh 抛 INVALID_PREPARED_CALL）。档位优先级：请求级
+       * `request.options.reasoningLevel`（引擎 agent-step 目前不用）> Model 绑定档位
+       * （引擎经 `modelSelection.options.reasoningLevel` + `bind()` 注入）。
+       */
+      const buildDshCall = (request: ModelRequest): {
         config: {
-          provider,
-          model: modelId,
-          ...(maxTokens === undefined ? {} : { maxTokens }),
-        },
-        generateOptions: {
-          provider,
-          model: modelId,
-          messages: translateMessagesToDsh(request.messages, { provider, model: modelId }),
-          ...(tools === undefined ? {} : { tools }),
-          ...(maxTokens === undefined ? {} : { maxTokens }),
-          ...(request.abortSignal === undefined ? {} : { signal: request.abortSignal }),
-        },
+          provider: string;
+          model: string;
+          maxTokens?: number;
+          reasoningEffort?: NonNullable<GenerateOptions["reasoningEffort"]>;
+        };
+        generateOptions: GenerateOptions;
+      } => {
+        const maxTokens = request.options?.maxOutputTokens;
+        const reasoningLevel = request.options?.reasoningLevel ?? currentOptions.reasoningLevel;
+        const reasoningEffort =
+          reasoningLevel === undefined || reasoningLevel.length === 0
+            ? undefined
+            : ReasoningEffortId(reasoningLevel);
+        const tools = translateToolsToDsh(request.tools);
+        return {
+          config: {
+            provider,
+            model: modelId,
+            ...(maxTokens === undefined ? {} : { maxTokens }),
+            ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
+          },
+          generateOptions: {
+            provider,
+            model: modelId,
+            messages: translateMessagesToDsh(request.messages, { provider, model: modelId }),
+            ...(tools === undefined ? {} : { tools }),
+            ...(maxTokens === undefined ? {} : { maxTokens }),
+            ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
+            ...(request.abortSignal === undefined ? {} : { signal: request.abortSignal }),
+          },
+        };
       };
-    };
 
-    const streamDsh = async function* (request: ModelRequest): AsyncGenerator<ModelEvent> {
-      const { config, generateOptions } = buildDshCall(request);
-      let prepared: PreparedLlmCall;
-      try {
-        prepared = await options.ctx.llm.prepareCall(config, request.abortSignal);
-      } catch (error) {
-        throw normalizeBridgeError(error);
-      }
-      const state = emptyStreamState();
-      const chunks = prepared.stream(generateOptions);
-      for await (const chunk of chunks) {
-        const events: ModelEvent[] = [];
-        translateChunk(chunk, state, events);
-        for (const event of events) yield event;
-      }
-    };
-
-    const createModel = (currentOptions: ModelOptions): Model => ({
-      providerId: createModelProviderId(provider),
-      modelId: createModelId(modelId),
-      displayName: `dsh:${provider}/${modelId}`,
-      properties,
-      optionSpecs: {
-        reasoningLevel: {
-          values: ["disabled"],
-          map: "{'reasoning_effort': reasoningLevel}",
-        },
-        maxOutputTokens: {
-          max: maxOutputTokensCap,
-          map: "{'max_output_tokens': maxOutputTokens}",
-        },
-      },
-      options: currentOptions,
-      bind(nextOptions) {
-        return createModel({ ...currentOptions, ...nextOptions });
-      },
-      async generateText(request): Promise<ModelResult> {
+      const streamDsh = async function* (request: ModelRequest): AsyncGenerator<ModelEvent> {
         const { config, generateOptions } = buildDshCall(request);
         let prepared: PreparedLlmCall;
         try {
@@ -395,53 +401,104 @@ export function createDshModelBridge(options: DshModelBridgeOptions): RuntimeMod
           throw normalizeBridgeError(error);
         }
         const state = emptyStreamState();
-        let text = "";
-        const reasoning: Array<{ type: "reasoning"; text: string }> = [];
-        let finishReason = "stop";
-        let usage: ModelUsage = {};
-        for await (const chunk of prepared.stream(generateOptions)) {
+        const chunks = prepared.stream(withPreparedDefaults(generateOptions, prepared));
+        for await (const chunk of chunks) {
           const events: ModelEvent[] = [];
           translateChunk(chunk, state, events);
-          for (const event of events) {
-            switch (event.type) {
-              case "text_delta":
-                text += event.text;
-                break;
-              case "reasoning_delta": {
-                const last = reasoning.at(-1);
-                if (last) last.text += event.text;
-                else reasoning.push({ type: "reasoning", text: event.text });
-                break;
+          for (const event of events) yield event;
+        }
+      };
+
+      return {
+        providerId: createModelProviderId(provider),
+        modelId: createModelId(modelId),
+        displayName: `dsh:${provider}/${modelId}`,
+        properties,
+        optionSpecs: {
+          reasoningLevel: {
+            values: effectiveReasoningValues,
+            map: "{'reasoning_effort': reasoningLevel}",
+          },
+          maxOutputTokens: {
+            max: maxOutputTokensCap,
+            map: "{'max_output_tokens': maxOutputTokens}",
+          },
+        },
+        options: currentOptions,
+        bind(nextOptions) {
+          return createModel({ ...currentOptions, ...nextOptions });
+        },
+        async generateText(request): Promise<ModelResult> {
+          const { config, generateOptions } = buildDshCall(request);
+          let prepared: PreparedLlmCall;
+          try {
+            prepared = await options.ctx.llm.prepareCall(config, request.abortSignal);
+          } catch (error) {
+            throw normalizeBridgeError(error);
+          }
+          const state = emptyStreamState();
+          let text = "";
+          const reasoning: Array<{ type: "reasoning"; text: string }> = [];
+          let finishReason = "stop";
+          let usage: ModelUsage = {};
+          for await (const chunk of prepared.stream(withPreparedDefaults(generateOptions, prepared))) {
+            const events: ModelEvent[] = [];
+            translateChunk(chunk, state, events);
+            for (const event of events) {
+              switch (event.type) {
+                case "text_delta":
+                  text += event.text;
+                  break;
+                case "reasoning_delta": {
+                  const last = reasoning.at(-1);
+                  if (last) last.text += event.text;
+                  else reasoning.push({ type: "reasoning", text: event.text });
+                  break;
+                }
+                case "finish":
+                  finishReason = event.finishReason;
+                  usage = event.usage;
+                  break;
+                default:
+                  break;
               }
-              case "finish":
-                finishReason = event.finishReason;
-                usage = event.usage;
-                break;
-              default:
-                break;
             }
           }
-        }
-        return {
-          text,
-          finishReason,
-          usage,
-          ...(reasoning.length > 0 ? { reasoning } : {}),
-          ...(state.toolCalls.length > 0 ? { toolCalls: state.toolCalls } : {}),
-        };
-      },
-      streamText(request) {
-        return streamDsh(request);
-      },
-    });
+          return {
+            text,
+            finishReason,
+            usage,
+            ...(reasoning.length > 0 ? { reasoning } : {}),
+            ...(state.toolCalls.length > 0 ? { toolCalls: state.toolCalls } : {}),
+          };
+        },
+        streamText(request) {
+          return streamDsh(request);
+        },
+      };
+    };
 
     return createModel(baseOptions);
   };
 }
 
+/**
+ * `prepareCall` 会把 adapter 缺省（`defaultMaxTokens`、reasoning `defaultEffort`）
+ * 物化进 `prepared.config`，而 dispatch 的 options 必须与物化后的 config 逐字段
+ * 相等（`callConfigEquals`，否则 INVALID_PREPARED_CALL）。把物化值回填进派发
+ * options —— dsh 的缺省语义原样保留，桥不自行填缺省。
+ */
+function withPreparedDefaults(generateOptions: GenerateOptions, prepared: PreparedLlmCall): GenerateOptions {
+  const { maxTokens, reasoningEffort } = prepared.config;
+  return {
+    ...generateOptions,
+    ...(maxTokens === undefined ? {} : { maxTokens }),
+    ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
+  };
+}
+
 /** 流外的 dsh `LlmError`（含 `failure` 事实）归一化为 `DshModelError`（保 code）。 */
-function normalizeBridgeError(error: unknown): Error {
-  if (error instanceof DshModelError) return error;
+function normalizeBridgeError(error: unknown): Error {  if (error instanceof DshModelError) return error;
   const candidate = error as { failure?: unknown } | null;
   if (
     candidate !== null &&

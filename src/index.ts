@@ -31,6 +31,7 @@ import type {
   ResumeAgentOptions,
 } from "@deepseek-ai/dsh-agent";
 import type {} from "@deepseek-ai/dsh-session-persistence";
+import type { LlmResolvedModelInfo } from "@deepseek-ai/dsh-llm";
 import { SessionLogOffset } from "@deepseek-ai/dsh-session";
 
 import { ZcodeLoopAgent } from "./agent.js";
@@ -143,6 +144,22 @@ export class ZcodeLoop extends Service implements AgentFactory {
       const provider = agentOptions.provider ?? this.config.provider;
       const model = agentOptions.model ?? this.config.model;
 
+      // ---- dsh 路由真实元数据（引擎面 Model 声明的首选来源）----
+      // 查询失败不阻塞装配：桥内回落 config → 硬编码默认（docs/GAPS.md 取值链）。
+      let resolved: LlmResolvedModelInfo | undefined;
+      try {
+        resolved = await this.loopCtx.llm.resolveModelInfo(provider, model);
+      } catch {
+        resolved = undefined;
+      }
+      // agentOptions.reasoningEffort → 引擎 selection 档位（仅在 dsh 目录档位表内；
+      // 引擎会按 optionSpecs.reasoningLevel.values 校验 selection，缺席目录时映射会失配）。
+      const effortIds = resolved?.reasoning?.efforts?.map((effort) => effort.id) ?? [];
+      const reasoningLevel =
+        agentOptions.reasoningEffort !== undefined && effortIds.includes(agentOptions.reasoningEffort)
+          ? agentOptions.reasoningEffort
+          : undefined;
+
       // ---- 桥件 ----
       const sessionId = createSessionId(String(options.sessionId));
       const eventBridge = new DshSessionEventStoreBridge({ session, sessionId });
@@ -161,6 +178,7 @@ export class ZcodeLoop extends Service implements AgentFactory {
           ctx: this.loopCtx,
           provider,
           model,
+          ...(resolved === undefined ? {} : { resolved }),
           ...(this.config.contextWindow === undefined
             ? {}
             : { contextWindow: this.config.contextWindow }),
@@ -170,7 +188,11 @@ export class ZcodeLoop extends Service implements AgentFactory {
         }),
         workingDirectory: options.meta?.cwd ?? process.cwd(),
         config: {
-          modelSelection: { providerId: provider, modelId: model },
+          modelSelection: {
+            providerId: provider,
+            modelId: model,
+            ...(reasoningLevel === undefined ? {} : { options: { reasoningLevel } }),
+          },
           // 每轮存活的 system prompt 接缝（见 system-prompt-bridge 模块头）。
           systemPrompt: promptAssembly.prompt,
           // 禁全部内建工具：模型可见工具面 = dsh 工具（经桥），todo reminder 门随之关闭。

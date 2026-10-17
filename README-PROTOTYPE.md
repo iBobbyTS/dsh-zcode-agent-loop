@@ -94,3 +94,7 @@ trace、bundle），可直接肉眼检查。
   读取端拒绝（stock 用 TOOL_NOT_STARTED repair 事件处理；原型接受，happy path
   已验证）。
 - `dsh web` 完整投影喂饱、升级 drill、golden round-trip 快照：PLAN 排除项。
+- 模型能力元数据：contextWindow / 输入模态(text) / 推理档位 / maxOutputTokens 已从
+  dsh `resolveModelInfo` 真实来源取值（取值链与断言见 `scripts/s02-integration.ts`
+  AC5）；**video / audio / pdf 输入不支持**，image 输入因数据通路未落地被门控关闭，
+  toolUpdate 机制未启用——原因与补齐路径详见 [docs/GAPS.md](docs/GAPS.md)。

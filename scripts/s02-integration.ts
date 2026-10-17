@@ -21,9 +21,10 @@ import { Context } from "@deepseek-ai/cordis";
 import LlmRuntime, {
   expandAssistantStream,
   LlmAdapter,
+  ReasoningEffortId,
   ToolCallId as DshToolCallId,
 } from "@deepseek-ai/dsh-llm";
-import type { GenerateOptions, StreamChunk } from "@deepseek-ai/dsh-llm";
+import type { GenerateOptions, LlmResolvedModelInfo, StreamChunk } from "@deepseek-ai/dsh-llm";
 import { Session as DshSession, SessionId as DshSessionId } from "@deepseek-ai/dsh-session";
 
 import { createDshModelBridge, DshModelError } from "../src/bridges/model-bridge.js";
@@ -45,12 +46,15 @@ import {
 class ScriptedAdapter extends LlmAdapter {
   requests: GenerateOptions[] = [];
 
-  constructor(private readonly script: StreamChunk[][]) {
+  constructor(
+    private readonly script: StreamChunk[][],
+    private readonly modelInfo: Partial<LlmResolvedModelInfo> = {},
+  ) {
     super();
   }
 
-  override resolveModel(provider: string, model: string): Promise<{ provider: string; id: string; name: string }> {
-    return Promise.resolve({ provider, id: model, name: model });
+  override resolveModel(provider: string, model: string): Promise<LlmResolvedModelInfo> {
+    return Promise.resolve({ provider, id: model, name: model, ...this.modelInfo });
   }
 
   async *stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
@@ -441,8 +445,93 @@ async function main(): Promise<void> {
   assert(probeCode === "RATE_LIMIT_PROBE" && caught.providerCode === "RATE_LIMIT_PROBE", `providerCode must survive, got ${probeCode}`);
   console.log(`[s02] probe error finish -> DshModelError providerCode=${caught.providerCode} (status=${String(probeStatus)})`);
 
+  // ---- AC5：dsh resolveModelInfo 元数据 → 引擎面 Model 声明（取值链 + 档位请求通路）----
+  const metaCtx = new Context();
+  await metaCtx.plugin(LlmRuntime);
+  const metaAdapter = new ScriptedAdapter(
+    [textChunks("meta ok"), textChunks("meta ok 2")],
+    {
+      context: { contextWindow: 123_456 },
+      defaultMaxTokens: 7_777,
+      inputModalities: ["text", "image"],
+      systemPromptUpdate: "in-history",
+      reasoning: {
+        efforts: [
+          { id: ReasoningEffortId("low"), name: "Low" },
+          { id: ReasoningEffortId("high"), name: "High" },
+        ],
+        defaultEffort: ReasoningEffortId("low"),
+      },
+    },
+  );
+  metaCtx.llm.registerAdapter(["meta"], metaAdapter);
+  // 经真实服务路径取回（与 createAgent 装配期同一入口）。
+  const resolved = await metaCtx.llm.resolveModelInfo("meta", "meta-model");
+  assert(
+    resolved.context?.contextWindow === 123_456,
+    `resolveModelInfo must carry adapter contextWindow, got ${String(resolved.context?.contextWindow)}`,
+  );
+
+  const metaFactory = createDshModelBridge({
+    ctx: metaCtx,
+    provider: "meta",
+    model: "meta-model",
+    resolved,
+  });
+  const metaModel = metaFactory({ selection: { providerId: "meta", modelId: "meta-model" } });
+  assert(metaModel.properties.contextWindow === 123_456, "engine-facing contextWindow must come from resolved info");
+  assert(
+    metaModel.properties.inputFormat.supportsText === true && metaModel.properties.inputFormat.supportsImage === false,
+    "image stays gated off until the data path lands (docs/GAPS.md)",
+  );
+  assert(metaModel.properties.supportsMidConversationSystem === true, "systemPromptUpdate 'in-history' must map through");
+  assert(
+    metaModel.optionSpecs.reasoningLevel.values.join(",") === "low,high",
+    `reasoningLevel.values must come from dsh efforts, got ${metaModel.optionSpecs.reasoningLevel.values.join(",")}`,
+  );
+  assert(metaModel.optionSpecs.maxOutputTokens.max === 7_777, "maxOutputTokens cap must come from defaultMaxTokens");
+  console.log(
+    `[s02] AC5 metadata chain: contextWindow=${String(metaModel.properties.contextWindow)}, maxOut=${String(metaModel.optionSpecs.maxOutputTokens.max)}, efforts=${metaModel.optionSpecs.reasoningLevel.values.join("|")}, midConversationSystem=${String(metaModel.properties.supportsMidConversationSystem)}`,
+  );
+
+  // 显式 config 覆盖优先于 resolved。
+  const overrideModel = createDshModelBridge({
+    ctx: metaCtx,
+    provider: "meta",
+    model: "meta-model",
+    resolved,
+    contextWindow: 999,
+    maxOutputTokens: 888,
+  })({ selection: { providerId: "meta", modelId: "meta-model" } });
+  assert(
+    overrideModel.properties.contextWindow === 999 && overrideModel.optionSpecs.maxOutputTokens.max === 888,
+    "explicit config must override resolved metadata",
+  );
+
+  // bind 档位 → dsh 请求 reasoningEffort（引擎经 modelSelection.options + bind 注入的通道）。
+  const bound = metaModel.bind({ reasoningLevel: "high" });
+  for await (const _event of bound.streamText({ messages: [{ role: "user", content: "meta probe" }] })) {
+    void _event;
+  }
+  const lastMetaRequest = metaAdapter.requests.at(-1);
+  assert(
+    String(lastMetaRequest?.reasoningEffort) === "high",
+    `bound reasoningLevel must reach dsh as reasoningEffort, got ${JSON.stringify(lastMetaRequest?.reasoningEffort)}`,
+  );
+  // 不 bind、请求不带档位 → 桥不自行填缺省；dsh prepareCall 把 defaultEffort
+  // 物化进派发 options（withPreparedDefaults 回填），"low" 是 dsh 侧语义而非桥塞入。
+  const unbound = metaFactory({ selection: { providerId: "meta", modelId: "meta-model" } });
+  for await (const _event of unbound.streamText({ messages: [{ role: "user", content: "meta probe 2" }] })) {
+    void _event;
+  }
+  assert(
+    String(metaAdapter.requests.at(-1)?.reasoningEffort) === "low",
+    "absent reasoningLevel must let dsh materialize its defaultEffort (low), not a bridge-invented value",
+  );
+  console.log("[s02] AC5 reasoning effort path: bind('high') -> reasoningEffort=high; absent -> dsh default 'low'");
+
   console.log(`[s02] dsh log total events: ${String(dshSession.snapshotEvents().length)}, bridge drops: ${String(stats.dropped)}`);
-  console.log("[s02] PASS: AC1-AC4 + error-finish probe all green");
+  console.log("[s02] PASS: AC1-AC5 + error-finish probe all green");
 }
 
 main().catch((error: unknown) => {
