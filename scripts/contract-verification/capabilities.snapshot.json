@@ -297,6 +297,9 @@
   "declarations": {
     "src/agent.ts:ZcodeLoopAgentDeps": "520081477d70ba5c9fe204f2a08d7d6a1f531071118e713eb2ff9f8ab2fa814e",
     "src/agent.ts:Phase": "d35e27ede6400e33d01373715e17124cd48d6ce3f9db09c727d9738755ffe8ac",
+    "src/branch-rerun.ts:BranchRerunTarget": "98a07473f96f2b90f84173a955a77606455ed6f19db016efe4e3e2ef68bd9225",
+    "src/branch-rerun.ts:BranchRerunRequest": "842885de062e9bf98be7c940af3922be389a091b86830af8fdd0f15a26558774",
+    "src/branch-rerun.ts:BranchRerun": "131ef2c7b9ea56de3bcf77f1fc1cca247dd65779960903250571be85541790b3",
     "src/bridges/attachment-bridge.ts:AttachmentMediaBridge": "d6d93f7738533365ea6fbef84b5d542685b9e626b15a112d98c6c2b31ba5fc26",
     "src/bridges/attachment-bridge.ts:DshUserInput": "f6a0c4495a24cf64d8541412cd26c26e9f378f39b6c39656fcc73a02209df070",
     "src/bridges/event-store-bridge.ts:TurnStartedPayload": "6b0ff49175febca54fc473d63d143e2bea8970030f643e234cfee7d1c81d33fb",
@@ -4288,6 +4291,7 @@
   },
   "implementations": {
     "src/agent.ts": "709243867ffbbdb32ddd89f1a8966146c3c07d4852d2d7c5b68a21d9f3452399",
+    "src/branch-rerun.ts": "25d8fd04410d5feb934f56b6ee9243fec121ab1af9b4a33b5f8b63b3083fa1c5",
     "src/bridges/attachment-bridge.ts": "64d24242752a24ef049264f89a101a3aadeb81cb6a8acadaf5d014504651eef5",
     "src/bridges/event-store-bridge.ts": "529590375f961f9e74e22639e24b76509ab0a075e0d593e0538906d98323fa41",
     "src/bridges/logger-adapter.ts": "852fec3b7728c256689e1bc23b50c5a2e705d1e5e15c22d79d16709eca8895bf",
@@ -4297,7 +4301,7 @@
     "src/bridges/tool-bridge.ts": "cbf2ca9cb8f69b6f20aeaebd6cc06db2fb450f687c1946159347532fe2247883",
     "src/engine-facade.ts": "dc06498bd1306ec5e0973df462325db853fd2a998138a03c32dde9a16f226860",
     "src/inbox.ts": "4441b5774c185c074bdf80fa4841ef19ee158c1e92aec6644101659181372e18",
-    "src/index.ts": "0f829754eb8ea6a89efd1e92c1ec947f9dca36695de9e8e602dc1091231e9919",
+    "src/index.ts": "f0a5606b82507f92bb1fae56e374852d5a84ac776bfeac925ee53a4c12fa3b86",
     "src/off-peak.ts": "1d69419876c692f3239ed5ae2b7101e15bd46e4f53ea8f64dedc7358ed7d4ac0",
     "src/runtime-seam.ts": "d53b45f8461f2f379fa1478f902a320a87c00de6e433f37b62159248cf997650",
     "src/side-chat.ts": "f1e534f9411979000690e8224e959ff4bc695ca10fcc5cc226988e9e34f9f64d",

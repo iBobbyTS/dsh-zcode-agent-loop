@@ -67,6 +67,11 @@ import type {
 import { foldRequestHeader, interruptedTurnClosers, SessionLogOffset, SessionSeq } from "@deepseek-ai/dsh-session";
 import { z as zod } from "zod";
 
+import {
+  BRANCH_RERUN_USAGE,
+  createBranchRerun,
+  parseBranchRerunInput,
+} from "./branch-rerun.js";
 import { inboxProjectionDefinition } from "./inbox.js";
 import { registerOffPeakCommands } from "./off-peak.js";
 import { createSelectionSideChat } from "./side-chat.js";
@@ -391,6 +396,29 @@ export class ZcodeLoop extends Service implements AgentFactory {
             return {
               kind: "success",
               text: `Side chat ${branch.sessionId} created from parent ${agent.id} through event ${branch.boundary}.`,
+            };
+          } catch (error) {
+            return { kind: "error", text: error instanceof Error ? error.message : String(error) };
+          }
+        },
+      });
+      commandCtx.commands.register({
+        name: "rerun",
+        description: "Branch from the completed turn before a user message and seed the edited input (new session; parent log unchanged)",
+        input: { hint: "<message-number>|last <edited text>" },
+        handler: async ({ agent, rawInput, signal }) => {
+          signal.throwIfAborted();
+          const request = parseBranchRerunInput(rawInput);
+          if (request === undefined) return { kind: "error", text: BRANCH_RERUN_USAGE };
+          try {
+            const branch = await createBranchRerun(commandCtx, agent, request, signal);
+            return {
+              kind: "success",
+              text:
+                `Rerun branch ${branch.sessionId} created: parentSession=${agent.id}, ` +
+                `rerunFrom=message:${branch.targetSeq},boundary:${branch.boundary}, ` +
+                `userMessage:${branch.messageNumber}, inherited:${branch.inheritedEventCount}. ` +
+                "This creates a new session and leaves the parent log unchanged (not a same-session rewind).",
             };
           } catch (error) {
             return { kind: "error", text: error instanceof Error ? error.message : String(error) };

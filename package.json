@@ -41,6 +41,7 @@
     "verify:preset-tools": "tsx scripts/preset-tools-integration.ts",
     "verify:extension-foundation": "tsx scripts/extension-foundation-integration.ts",
     "verify:subagent-sidechat": "tsx scripts/subagent-sidechat-integration.ts",
+    "verify:branch-rerun": "tsx scripts/branch-rerun-integration.ts",
     "verify:workflow": "tsx scripts/workflow-integration.ts",
     "verify:jobs-schedule": "tsx scripts/jobs-schedule-integration.ts",
     "verify:runtime-seam": "tsx scripts/runtime-seam-integration.ts",
