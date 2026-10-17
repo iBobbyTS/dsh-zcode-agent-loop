@@ -23,6 +23,7 @@
     "verify:facade": "node scripts/assert-facade-isolation.mjs",
     "verify:s02": "tsx scripts/s02-integration.ts",
     "verify:s03": "tsx scripts/s03-integration.ts",
+    "verify:s04": "node scripts/smoke.mjs",
     "verify": "pnpm verify:facade && pnpm cold-start"
   },
   "dependencies": {
@@ -31,13 +32,17 @@
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "4.0.5",
+    "@deepseek-ai/dsh": "0.2.1-alpha.5",
     "@deepseek-ai/dsh-agent": "0.2.1-alpha.5",
     "@deepseek-ai/dsh-llm": "0.2.1-alpha.5",
     "@deepseek-ai/dsh-session": "0.2.1-alpha.5",
+    "@deepseek-ai/dsh-session-persistence": "0.2.1-alpha.5",
+    "@deepseek-ai/dsh-session-persistence-jsonl": "0.2.1-alpha.5",
     "@deepseek-ai/dsh-system-prompt": "0.2.1-alpha.5",
     "@deepseek-ai/dsh-tools": "0.2.1-alpha.5",
     "@deepseek-ai/schemastery": "^3.18.4",
     "@types/node": "^24.0.0",
+    "esbuild": "^0.28.2",
     "tsx": "^4.19.4",
     "typescript": "^6.0.2",
     "zod": "4.6.5"

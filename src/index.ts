@@ -5,9 +5,9 @@
  * `dsh-agent-loop`（profile patch：disable agent-loop row + insert 本插件 row，
  * 见 `dsh.bundle` 声明与 `profile/cordis.patch.yml` 样例）。
  *
- * `AgentFactory.createAgent` 装配（结构照抄 stock loop 的 createStoredSession
- * 路径；原型无 persistence backend，`createStoredSession` 退化为
- * sessions.create 即 prepare→enter→announce）：
+ * `AgentFactory.createAgent` 装配（结构照抄 stock loop 的 createAgent/createStoredSession
+ * 路径；persistence backend 在场时 prepare→persistence.create→…→enter→announce
+ * 让 session 事件经 live 路由落进写句柄，无 backend 时退化为纯内存发布）：
  *
  *   dsh session 创建/挂载 → event-store 桥（S02，唯一落盘真相）
  *   → 工具桥（dsh 工具面 → ZCode ToolRegistry；执行回 dsh 管线）
@@ -30,6 +30,8 @@ import type {
   CreateAgentOptions,
   ResumeAgentOptions,
 } from "@deepseek-ai/dsh-agent";
+import type {} from "@deepseek-ai/dsh-session-persistence";
+import { SessionLogOffset } from "@deepseek-ai/dsh-session";
 
 import { ZcodeLoopAgent } from "./agent.js";
 import { DshSessionEventStoreBridge } from "./bridges/event-store-bridge.js";
@@ -82,8 +84,22 @@ export class ZcodeLoop extends Service implements AgentFactory {
     maxOutputTokens: z.natural(),
   }) as unknown as z<Config>;
 
+  /**
+   * 本插件自己的 fiber ctx（构造参数，构造期捕获）。
+   *
+   * S04 现场实测：`createAgent` 被调用时 `this` 是 cordis traceable receiver
+   * （dsh AgentRegistry.create 用 `getTraceable(ownerCtx, target)` 把调用方 ctx
+   * 绑进 receiver，"ownership follows the caller"），因此 `this.ctx` 会**重绑成
+   * 调用方入口插件**（如 headless-runner）的 ctx，其注入面没有 systemPrompt 等
+   * 服务 —— 一切服务访问必须走本字段（stock 同款：`this.runtime.ctx`），`ownerCtx`
+   * 只用于 ownership 断言。`this.ctx` 的 own-property 赋值被 proxy 拦截，故另取
+   * 字段名保存。
+   */
+  private readonly loopCtx: Context;
+
   constructor(ctx: Context, public readonly config: Config) {
     super(ctx, "zcodeLoop");
+    this.loopCtx = ctx;
     ctx.effect(() => ctx.agents.setFactory(this), "zcodeLoop.setFactory()");
     // 与 stock AgentLoop 相同的两个 prompt 变量（persona 段可能引用）。
     ctx.systemPrompt.variable("provider", (context) => context.agent?.options.provider);
@@ -91,82 +107,123 @@ export class ZcodeLoop extends Service implements AgentFactory {
   }
 
   async createAgent(ownerCtx: Context, options: CreateAgentOptions): Promise<AgentHandle> {
-    // ---- dsh session 创建/挂载（stock createStoredSession 路径；无 persistence）----
-    const session = this.ctx.sessions.create(options.sessionId, {
+    // ownership 断言对齐 stock（createAgent 的 this 被重绑为调用方 receiver，
+    // 服务访问一律走 this.loopCtx —— 见 loopCtx 字段注释）。
+    ownerCtx.fiber.assertActive();
+    // ---- dsh session 装配（stock createAgent/createStoredSession 路径）----
+    // prepare（未发布）→ persistence.create（session-persistence 在场即开写句柄，
+    // jsonl 后端把已发布 session 的 live 事件按 id 路由进句柄）→ 装配 →
+    // enter → agents.enter → announce → 补存 setup 窗口事件 → announce('startup')。
+    // 原实现用 sessions.create（prepare+enter+announce 一步发布）：在真实 dsh
+    // （dsh-base 挂了 session-persistence-jsonl）下没有任何写句柄，session log
+    // 不会落盘 —— S04 修复（最小改动，报告声明），无 persistence 时行为与 S03 一致。
+    const session = this.loopCtx.sessions.prepare(options.sessionId, {
       ...(options.meta === undefined ? {} : { meta: options.meta }),
       ...(options.seed === undefined ? {} : { seed: options.seed }),
       ...(options.inheritedEventCount === undefined
         ? {}
         : { inheritedEventCount: options.inheritedEventCount }),
     });
+    const persistence = this.loopCtx.get("sessionPersistence");
+    const stored =
+      persistence === undefined
+        ? undefined
+        : {
+            handle: await persistence.create(session.header, {
+              ...(options.inheritedEventCount === undefined
+                ? {}
+                : { inheritedEventCount: options.inheritedEventCount }),
+            }),
+            storedCount: 0,
+          };
 
-    // ---- 路由（agentOptions 覆盖插件默认）----
-    const agentOptions = options.agentOptions ?? {};
-    const provider = agentOptions.provider ?? this.config.provider;
-    const model = agentOptions.model ?? this.config.model;
+    try {
+      // ---- 路由（agentOptions 覆盖插件默认）----
+      const agentOptions = options.agentOptions ?? {};
+      const provider = agentOptions.provider ?? this.config.provider;
+      const model = agentOptions.model ?? this.config.model;
 
-    // ---- 桥件 ----
-    const sessionId = createSessionId(String(options.sessionId));
-    const eventBridge = new DshSessionEventStoreBridge({ session, sessionId });
-    const toolBridge = createDshToolBridge({
-      ctx: this.ctx,
-      // 工具执行期解析在册 agent（进入 dsh 执行输入的 agent 字段）。
-      agent: () => this.ctx.agents.get(options.sessionId),
-    });
-    const promptAssembly = await assembleDshSystemPrompt(this.ctx);
+      // ---- 桥件 ----
+      const sessionId = createSessionId(String(options.sessionId));
+      const eventBridge = new DshSessionEventStoreBridge({ session, sessionId });
+      const toolBridge = createDshToolBridge({
+        ctx: this.loopCtx,
+        // 工具执行期解析在册 agent（进入 dsh 执行输入的 agent 字段）。
+        agent: () => this.loopCtx.agents.get(options.sessionId),
+      });
+      const promptAssembly = await assembleDshSystemPrompt(this.loopCtx);
 
-    // ---- ZCode 引擎（全经门面装配）----
-    const runtime = createEmbeddedEngine({
-      sessionId,
-      eventStore: eventBridge,
-      modelFactory: createDshModelBridge({
-        ctx: this.ctx,
-        provider,
-        model,
-        ...(this.config.contextWindow === undefined
-          ? {}
-          : { contextWindow: this.config.contextWindow }),
-        ...(this.config.maxOutputTokens === undefined
-          ? {}
-          : { maxOutputTokens: this.config.maxOutputTokens }),
-      }),
-      workingDirectory: options.meta?.cwd ?? process.cwd(),
-      config: {
-        modelSelection: { providerId: provider, modelId: model },
-        // 每轮存活的 system prompt 接缝（见 system-prompt-bridge 模块头）。
-        systemPrompt: promptAssembly.prompt,
-        // 禁全部内建工具：模型可见工具面 = dsh 工具（经桥），todo reminder 门随之关闭。
-        toolAllowlist: [],
-        dynamicWorkflowEnabled: false,
-        dynamicWorkflowToolsOnDemand: false,
-      },
-      deps: {
-        toolRegistry: toolBridge.registry,
-        // 直通 allow：把关交给 dsh 管线（tools/pre-execute waterfall 等）。
-        permissionBroker: createAllowThroughPermissionBroker(),
-        // 构造期最小 contextBuilder（首轮起被引擎 rebuild 取代，见模块头注释）。
-        contextBuilder: createDshContextBuilder(promptAssembly) as unknown as ContextBuilder,
-      },
-    });
+      // ---- ZCode 引擎（全经门面装配）----
+      const runtime = createEmbeddedEngine({
+        sessionId,
+        eventStore: eventBridge,
+        modelFactory: createDshModelBridge({
+          ctx: this.loopCtx,
+          provider,
+          model,
+          ...(this.config.contextWindow === undefined
+            ? {}
+            : { contextWindow: this.config.contextWindow }),
+          ...(this.config.maxOutputTokens === undefined
+            ? {}
+            : { maxOutputTokens: this.config.maxOutputTokens }),
+        }),
+        workingDirectory: options.meta?.cwd ?? process.cwd(),
+        config: {
+          modelSelection: { providerId: provider, modelId: model },
+          // 每轮存活的 system prompt 接缝（见 system-prompt-bridge 模块头）。
+          systemPrompt: promptAssembly.prompt,
+          // 禁全部内建工具：模型可见工具面 = dsh 工具（经桥），todo reminder 门随之关闭。
+          toolAllowlist: [],
+          dynamicWorkflowEnabled: false,
+          dynamicWorkflowToolsOnDemand: false,
+        },
+        deps: {
+          toolRegistry: toolBridge.registry,
+          // 直通 allow：把关交给 dsh 管线（tools/pre-execute waterfall 等）。
+          permissionBroker: createAllowThroughPermissionBroker(),
+          // 构造期最小 contextBuilder（首轮起被引擎 rebuild 取代，见模块头注释）。
+          contextBuilder: createDshContextBuilder(promptAssembly) as unknown as ContextBuilder,
+        },
+      });
 
-    // ---- Agent + 发布（setup 在发布前跑，对齐 stock 的事务顺序）----
-    const agent = new ZcodeLoopAgent(this.ctx, options.sessionId, agentOptions, session, {
-      runtime,
-      toolBridge,
-    });
-    const setupCommit = await options.setup?.(agent.ctx, agent);
-    setupCommit?.commit();
-    const detachAgent = this.ctx.agents.enter(agent, options.parentAgent);
-    await this.ctx.agents.announce(agent, "startup");
+      // ---- Agent + 发布（setup 在发布前跑，对齐 stock 的事务顺序）----
+      const agent = new ZcodeLoopAgent(this.loopCtx, options.sessionId, agentOptions, session, {
+        runtime,
+        toolBridge,
+      });
+      const setupCommit = await options.setup?.(agent.ctx, agent);
+      setupCommit?.commit();
 
-    return {
-      agent,
-      dispose: async () => {
-        agent.cancel({ kind: "disposed" }, { keepInbox: true });
-        await agent.whenIdle();
-        detachAgent();
-      },
-    };
+      // ---- 发布事务（stock publish 顺序）：补存 setup 窗口事件（不经 live 路由）
+      // → session enter → agent enter → announce → announce('startup') ----
+      if (stored !== undefined) {
+        // setup 窗口内追加的事件不经 session/event 重放，发布点补存（stock
+        // appendUnstoredSuffix）；必须在 enter 之前——enter 起 live 路由会把写
+        // 句柄光标按 event seq 推进，从 storedCount=0 补存会 seq 错位。
+        const suffix = session.snapshotEvents(SessionLogOffset(stored.storedCount));
+        if (suffix.length > 0) await stored.handle.append(suffix);
+        stored.storedCount += suffix.length;
+      }
+      const detachSession = this.loopCtx.sessions.enter(session);
+      const detachAgent = this.loopCtx.agents.enter(agent, options.parentAgent);
+      this.loopCtx.sessions.announce(session);
+      await this.loopCtx.agents.announce(agent, "startup");
+
+      return {
+        agent,
+        dispose: async () => {
+          agent.cancel({ kind: "disposed" }, { keepInbox: true });
+          await agent.whenIdle();
+          detachAgent();
+          detachSession();
+        },
+      };
+    } catch (error: unknown) {
+      // 回滚：关闭未物化的写句柄（stock create 的 stored?.handle.close()）。
+      await stored?.handle.close().catch(() => {});
+      throw error;
+    }
   }
 
   async resume(_ownerCtx: Context, _options: ResumeAgentOptions): Promise<AgentHandle> {

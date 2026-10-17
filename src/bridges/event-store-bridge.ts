@@ -5,15 +5,16 @@
  * `append()`，桥按最小翻译表写成 **合法 dsh `SessionEvent`** 并 `Session.append()`
  * 进注入的 dsh Session —— dsh session log 是唯一落盘真相，桥不做任何持久化决策。
  *
- * 翻译表（ZCode → dsh）：
+ * 翻译表（ZCode → dsh；排序满足 dsh durable format v4 的关系校验——消息与
+ * 工具事件必须落在 open turn+step 内，step/end 收口时工具必须全部解析）：
  * - turn_started            → turn/start{turn}（+ 缓冲 user/message，等首个 model_request 落）
- * - model_request           → [system/message（仅首次）] + user/message + step/start + request/header
+ * - model_request           → [上一步 assistant 缓冲落定 → step/end（若 open）] + step/start
+ *                               + [system/message（仅首次）] + user/message + request/header
  * - model_streaming         → 累积为该步 assistant 的紧凑流（AssistantStreamAccumulator）
- * - model_complete          → step/end + 缓冲 assistant/message（等工具结果或下一边界落）
+ * - model_complete          → 缓冲 assistant/message（等工具结果或下一边界落）
  * - tool_call_scheduled     → 落缓冲的 assistant/message（含 tool-call 块）+ tool/call
  * - tool_call_result/error  → tool/result（surfaceOp append，sourceEventSeqs 配对 tool/call）
- * - turn_complete           → 落缓冲 assistant/message + turn/end{reason:completed}
- * - turn_error              → 落缓冲 assistant/message + turn/end{reason:error}
+ * - turn_complete/error     → 落缓冲 assistant/message + step/end（若 open）+ turn/end{reason}
  * - 其余（流式/进度/生命周期杂项）与未知事件 → 丢弃并计数，不炸会话。
  *
  * 缓冲只是翻译排序（assistant/message 必须先于它的 tool 结果进入 surface），
@@ -257,6 +258,12 @@ const KNOWN_ZCODE_EVENT_TYPES = new Set<string>([
   "error",
 ]);
 
+
+/** 引擎 turnNumber 从 0 起，dsh durable format 要求 turn 正数（stock loop 1-based）。 */
+function dshTurn(turn: number | undefined): number {
+  return (turn ?? 0) + 1;
+}
+
 function dshFinishKindFromStopReason(stopReason: string): Extract<StreamChunk, { type: "finish" }>["reason"] {
   if (stopReason === "tool-calls" || stopReason === "tool_use" || stopReason === "tool_calls") {
     return { kind: "tool-calls" };
@@ -321,6 +328,8 @@ export class DshSessionEventStoreBridge implements SessionEventStorePort {
 
   private turn: number | undefined;
   private step = 0;
+  /** dsh `step/start` 已落、`step/end` 未落（v4 关系校验要求消息类事件在 open step 内）。 */
+  private stepOpen = false;
   private pendingUserText: string | undefined;
   private pendingAssistant: PendingAssistant | undefined;
   private openBlock: OpenBlock | undefined;
@@ -496,10 +505,11 @@ export class DshSessionEventStoreBridge implements SessionEventStorePort {
     const turn = payload.turnNumber;
     this.turn = turn;
     this.step = 0;
+    this.stepOpen = false;
     this.pendingAssistant = undefined;
     this.toolCallSeqs = new Map();
     this.resetStepStream();
-    this.options.session.append("turn/start", { turn });
+    this.options.session.append("turn/start", { turn: dshTurn(turn) });
     // user/message 等首个 model_request 再落：system/message 必须是 surface 节点 0，
     // 而引擎在 turn_started 才给出 input、首个 model_request 才给出 system prompt。
     this.pendingUserText = payload.input;
@@ -513,8 +523,19 @@ export class DshSessionEventStoreBridge implements SessionEventStorePort {
       return;
     }
     const step = this.step + 1;
-    // 上一缓冲（无工具的中间步）在此落定。
+    // 上一缓冲（无工具的中间步）先在仍打开的上一步里落定（S04 修复：v4 关系校验
+    // 要求 assistant/message 在 open step 内、step/end 收口前）。
     this.flushPendingAssistant();
+    // 上一 open step 收口（其 tool/result 已全部到达）再开新步：v4 关系校验要求
+    // system/user/assistant/tool 事件落在 open turn+step 内、turn/end 前无 open step。
+    // S04 修复（最小改动，报告声明）：原实现 system/user 先于 step/start、step/end
+    // 先于 assistant/tool 落盘，durable format 读取时全部拒绝。
+    if (this.stepOpen) {
+      this.options.session.append("step/end", { turn: dshTurn(turn), step: this.step });
+      this.stepOpen = false;
+    }
+    this.options.session.append("step/start", { turn: dshTurn(turn), step });
+    this.stepOpen = true;
     // system prompt 只在首次请求落（原型：后续变化丢弃计数，不做 in-history 归一化）。
     // S03 修复（最小改动，报告声明）：custom system prompt 路径下引擎会发**多条**前导
     // system 消息（cli_prefix 身份行 + stable custom body），全部都是模型可见内容；
@@ -534,7 +555,7 @@ export class DshSessionEventStoreBridge implements SessionEventStorePort {
       if (systemText.length > 0) {
         this.options.session.append(
           "system/message",
-          { turn, step, message: createSystemMessage(systemText) },
+          { turn: dshTurn(turn), step, message: createSystemMessage(systemText) },
           { surfaceOp: "append" },
         );
         this.systemMessageLogged = true;
@@ -552,7 +573,6 @@ export class DshSessionEventStoreBridge implements SessionEventStorePort {
       this.pendingUserText = undefined;
     }
     this.step = step;
-    this.options.session.append("step/start", { turn, step });
     this.options.session.append("request/header", {
       header: { config: { provider: payload.providerId, model: payload.modelId } },
       reason: this.lastRequest === undefined ? "initial" : "change",
@@ -678,7 +698,9 @@ export class DshSessionEventStoreBridge implements SessionEventStorePort {
   private translateModelComplete(payload: ModelCompletePayload): void {
     const turn = this.requireTurn();
     if (turn === undefined) return;
-    this.options.session.append("step/end", { turn, step: this.step });
+    // S04 修复：step/end 不在此落——v4 关系校验要求 assistant/message 与其
+    // tool/call、tool/result 留在 open step 内，step 由下一个 model_request
+    // 或 turn 收口事件负责关闭。
     // 关闭尚未 block-end 的开块，保证流结构完整。
     this.closeOpenBlock();
     const assistant: PendingAssistant = {
@@ -788,7 +810,7 @@ export class DshSessionEventStoreBridge implements SessionEventStorePort {
     this.options.session.append(
       "assistant/message",
       {
-        turn: assistant.turn,
+        turn: dshTurn(assistant.turn),
         step: assistant.step,
         message: createAssistantMessage({ content, source }),
         stream,
@@ -811,7 +833,7 @@ export class DshSessionEventStoreBridge implements SessionEventStorePort {
     // assistant/message（含至今的 tool-call 块）先于首个 tool/call 落进 surface。
     this.flushPendingAssistant(toolCall);
     const event = this.options.session.append("tool/call", {
-      turn,
+      turn: dshTurn(turn),
       step: this.step,
       callId: ToolCallId(payload.toolCallId),
       name: payload.toolName,
@@ -828,7 +850,7 @@ export class DshSessionEventStoreBridge implements SessionEventStorePort {
     this.options.session.append(
       "tool/result",
       {
-        turn,
+        turn: dshTurn(turn),
         step: this.step,
         message: createToolResultMessage({
           callId: ToolCallId(payload.toolCallId),
@@ -848,7 +870,7 @@ export class DshSessionEventStoreBridge implements SessionEventStorePort {
     this.options.session.append(
       "tool/result",
       {
-        turn,
+        turn: dshTurn(turn),
         step: this.step,
         message: createToolResultMessage({
           callId: ToolCallId(payload.toolCallId),
@@ -869,15 +891,26 @@ export class DshSessionEventStoreBridge implements SessionEventStorePort {
     const turn = this.requireTurn();
     if (turn === undefined) return;
     this.flushPendingAssistant();
-    this.options.session.append("turn/end", { turn, reason: { kind: "completed" } });
+    // v4 关系校验：turn/end 前不允许 open step（消息类事件已在其内落定）。
+    if (this.stepOpen) {
+      this.options.session.append("step/end", { turn: dshTurn(turn), step: this.step });
+      this.stepOpen = false;
+    }
+    this.options.session.append("turn/end", { turn: dshTurn(turn), reason: { kind: "completed" } });
   }
 
   private translateTurnError(payload: TurnErrorPayload): void {
     const turn = this.requireTurn();
     if (turn === undefined) return;
     this.flushPendingAssistant();
+    // v4 关系校验：turn/end 前不允许 open step。（错误路径若还有未解析的
+    // tool/call，durable 读取会拒绝——原型接受，见 S04 报告缺口。）
+    if (this.stepOpen) {
+      this.options.session.append("step/end", { turn: dshTurn(turn), step: this.step });
+      this.stepOpen = false;
+    }
     this.options.session.append("turn/end", {
-      turn,
+      turn: dshTurn(turn),
       reason: {
         kind: "error",
         error: {
