@@ -5396,7 +5396,7 @@
     "@deepseek-ai/dsh-web-app/./presets/ptc.patch.yml": "9e355c947bf61c3d2fe9bf3214b386f83c0d99d37579ce22576d4b82cb6e1a2c",
     "@deepseek-ai/dsh-web-app/./presets/minimal.patch.yml": "a2a9ba1c9c392a45466708f18bc0aefbf300577f9b544dc06049f73a8a5b3267",
     "@deepseek-ai/dsh-web-app/./presets/cordis.patch.yml": "01b0fc94fd49136b332254a7ae5658e43ffe646f7248047dba65d499cfc74596",
-    "workspace/pnpm-lock.yaml": "e2028fe66e4049d03993ad93387c8ab8f4b49b6ae1dab124fb9a95a844f0ba03",
+    "workspace/pnpm-lock.yaml": "3d317560df047b54c1cf6765438e27724b6073a90fedbf6ca6fa48b65b66083f",
     "bridge/cordis.patch.yml": "490915fb2c1bca0b07317bd4c06a5a6d6c2be2ce01b9092f2696c3b23dc6aaa3"
   }
 }
