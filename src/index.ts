@@ -66,6 +66,7 @@ import type {
 import { foldRequestHeader, interruptedTurnClosers, SessionLogOffset, SessionSeq } from "@deepseek-ai/dsh-session";
 import { z as zod } from "zod";
 
+import { inboxProjectionDefinition } from "./inbox.js";
 import { ZcodeLoopAgent } from "./agent.js";
 import type { ZcodeLoopAgentDeps } from "./agent.js";
 import { DshSessionEventStoreBridge } from "./bridges/event-store-bridge.js";
@@ -234,7 +235,7 @@ const turnBoundaryProjectionDefinition = {
 
 /**
  * 替换 stock agent-loop 的 zcode loop 工厂。
- * inject 与 stock AgentLoop 对齐（少 sessionProjections：inbox 最小重写不挂投影）。
+ * sessionProjections 保持可选；在场时注册标准 inbox 与 turnBoundary。
  */
 export class ZcodeLoop extends Service implements AgentFactory {
   static inject = ["agents", "sessions", "llm", "tools", "systemPrompt"];
@@ -267,15 +268,16 @@ export class ZcodeLoop extends Service implements AgentFactory {
     // 与 stock AgentLoop 相同的两个 prompt 变量（persona 段可能引用）。
     ctx.systemPrompt.variable("provider", (context) => context.agent?.options.provider);
     ctx.systemPrompt.variable("model", (context) => context.agent?.options.model);
-    // 阶段 8b：turnBoundary 投影可选注册（goal 工具开轮边界 authority 依赖；
+    // inbox 与 turnBoundary 投影可选注册（pending 队列与 goal 开轮边界读面；
     // stock 由 agent-loop 注册，本插件顶替其位）。运行时 inject 而非 static
     // inject——host 回归面没装 dsh-session-projection，声明成硬依赖会把插件
     // 挂起；服务缺席时回调不跑，goal 工具在那儿本就缺席，行为不变。
-    ctx.inject(["sessionProjections"], () => {
-      const projections = ctx.get("sessionProjections") as unknown as {
+    ctx.inject(["sessionProjections"], (projectionCtx) => {
+      const projections = projectionCtx.get("sessionProjections") as unknown as {
         register(definition: unknown): () => void;
       } | undefined;
       projections?.register(turnBoundaryProjectionDefinition);
+      projections?.register(inboxProjectionDefinition);
     });
   }
 

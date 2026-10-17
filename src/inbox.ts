@@ -1,24 +1,61 @@
-/**
- * inbox — 最小 next-turn inbox（ReactLoopInbox 的最小重写）。
- *
- * npm `@deepseek-ai/dsh-agent-loop` 不导出 `ReactLoopInbox`（其包导出面只有
- * AgentLoop/投影定义等），按任务合同的 fallback 走最小重写：
- *
- * - 持久性：与 stock 相同以 `agent/inbox/spliced` SessionEvent 为唯一真相
- *   （`Session.append`），本类内存态只是**自己写下的 splice 的折叠**——原型里
- *   本 agent 是该 session inbox 的唯一写者，不挂 projection registry。
- * - 语义：双 target 都按 stock splice/claim 语义实现（阶段 6 起 agent 消费
- *   next-step：busy steering 走 agent 的 steerActive append+claim；空闲 inject
- *   的 next-step 由 drain 的 `claim('next-turn')` 拼接消费——一条 followup
- *   独占一个 turn）。
- * - 事件：落盘不变；stock 的 agent/inbox/* live 词表（inserted/claimed/
- *   discarded）经构造期注入的 `emitLive` 回调补齐（阶段 6，UI 队列气泡实时
- *   显示；emit 只传实际 payload，agent 字段由 Scoped dispatch 收窄）——回调
- *   缺席时静默跳过（回归脚本等无派发面的路径）。
+/** Durable inbox commands and the stock-compatible public session projection.
+ * The session splice log is the authority, including seeded/resumed pending input.
+ * The queue uses the same fold with a local watermark when projections are absent.
  */
 import type { ContentBlock, MessageId, UserMessage } from "@deepseek-ai/dsh-llm";
-import type { Inbox, InboxState, InboxTarget } from "@deepseek-ai/dsh-agent";
-import type { Session as DshSession } from "@deepseek-ai/dsh-session";
+import type { Inbox, InboxState, InboxTarget, InboxWireState } from "@deepseek-ai/dsh-agent";
+import { SessionLogOffset } from "@deepseek-ai/dsh-session";
+import type { Session as DshSession, SessionEventMap } from "@deepseek-ai/dsh-session";
+import type { ProjectionDefinition } from "@deepseek-ai/dsh-session-projection";
+import { z } from "zod";
+
+const inboxProjectionSchema = z.object({
+  "next-turn": z.array(z.custom<UserMessage>()).readonly(),
+  "next-step": z.array(z.custom<UserMessage>()).readonly(),
+}).readonly();
+
+/** Strict durable coordinates; commands normalize JavaScript splice input first. */
+function foldInboxSplice(state: InboxState, splice: SessionEventMap["agent/inbox/spliced"]): InboxState {
+  const inbox = state[splice.target];
+  const removedCount = splice.removedCount ?? 0;
+  if (!Number.isSafeInteger(splice.start) || splice.start < 0 || splice.start > inbox.length
+    || !Number.isSafeInteger(removedCount) || removedCount < 0
+    || splice.start + removedCount > inbox.length) {
+    throw new Error("invalid inbox splice");
+  }
+  const next = inbox.toSpliced(splice.start, removedCount, ...splice.inserted);
+  const ids = new Set<string>();
+  for (const message of splice.target === "next-turn"
+    ? [...next, ...state["next-step"]]
+    : [...state["next-turn"], ...next]) {
+    if (ids.has(message.id)) throw new Error(`message "${message.id}" is already pending`);
+    ids.add(message.id);
+  }
+  return splice.target === "next-turn"
+    ? { "next-turn": next, "next-step": state["next-step"] }
+    : { "next-turn": state["next-turn"], "next-step": next };
+}
+
+/** Required private stock definition semantics; no second loop or internal import. */
+export const inboxProjectionDefinition = {
+  key: "inbox",
+  stateVersion: 1,
+  // Host registry uses zod 4.4; the plugin uses 4.6. Bridge their nominal schema types.
+  stateSchema: inboxProjectionSchema as unknown as ProjectionDefinition<"inbox", InboxState>["stateSchema"],
+  init: (): InboxState => ({ "next-turn": [], "next-step": [] }),
+  apply(state: InboxState, event) {
+    if (event.type !== "agent/inbox/spliced") return state;
+    try {
+      return foldInboxSplice(state, event.data);
+    } catch (error: unknown) {
+      throw new Error(`invalid persisted inbox splice at session seq ${event.seq}`, { cause: error });
+    }
+  },
+  wire: {
+    viewSchema: inboxProjectionSchema as unknown as NonNullable<ProjectionDefinition<"inbox", InboxState>["wire"]>["viewSchema"],
+    view: (state: InboxState) => state as unknown as InboxWireState,
+  },
+} satisfies ProjectionDefinition<"inbox", InboxState>;
 
 /** 消息文本投影（引擎 turn 输入是纯文本；非 text 块占位）。 */
 export function userMessageText(message: UserMessage): string {
@@ -35,7 +72,8 @@ export type InboxLiveEvent =
   | "agent/inbox/discarded";
 
 export class ZcodeLoopInbox implements Inbox {
-  private state: InboxState = { "next-turn": [], "next-step": [] };
+  private state: InboxState = inboxProjectionDefinition.init();
+  private foldedCount = 0;
 
   constructor(
     private readonly session: DshSession,
@@ -44,18 +82,20 @@ export class ZcodeLoopInbox implements Inbox {
      * claimed 的 `turn` 是拥有该批的 turn 号；inserted/discarded 无 turn 语义。
      */
     private readonly emitLive?: (event: InboxLiveEvent, payload: { message: UserMessage; turn?: number }) => void,
-  ) {}
+  ) {
+    this.current();
+  }
 
   get nextTurn(): readonly UserMessage[] {
-    return this.state["next-turn"];
+    return this.current()["next-turn"];
   }
 
   get nextStep(): readonly UserMessage[] {
-    return this.state["next-step"];
+    return this.current()["next-step"];
   }
 
   get hasPending(): boolean {
-    return this.state["next-turn"].length > 0 || this.state["next-step"].length > 0;
+    return this.current()["next-turn"].length > 0 || this.current()["next-step"].length > 0;
   }
 
   /** 持久清空全部 pending（next-step 先于 next-turn，写 canceled splice）。 */
@@ -69,7 +109,7 @@ export class ZcodeLoopInbox implements Inbox {
    * 取走也落 splice（不带 canceled outcome——被消费不是被取消）。
    */
   claim(target: InboxTarget, turn: number): UserMessage[] {
-    const claimed = this.apply("next-step", 0, this.state["next-step"].length, [], false, turn);
+    const claimed = this.apply("next-step", 0, this.current()["next-step"].length, [], false, turn);
     if (target === "next-turn") {
       claimed.push(...this.apply("next-turn", 0, 1, [], false, turn));
     }
@@ -80,14 +120,14 @@ export class ZcodeLoopInbox implements Inbox {
   claimMessages(ids: readonly MessageId[], turn: number): UserMessage[] {
     const claimed: UserMessage[] = [];
     for (const id of ids) {
-      const index = this.state["next-step"].findIndex((message) => message.id === id);
+      const index = this.current()["next-step"].findIndex((message) => message.id === id);
       if (index >= 0) claimed.push(...this.apply("next-step", index, 1, [], false, turn));
     }
     return claimed;
   }
 
   append(target: InboxTarget, message: UserMessage): void {
-    this.splice(target, this.state[target].length, 0, [message]);
+    this.splice(target, this.current()[target].length, 0, [message]);
   }
 
   prepend(target: InboxTarget, message: UserMessage): void {
@@ -118,9 +158,18 @@ export class ZcodeLoopInbox implements Inbox {
     return this.apply(target, start, deleteCount, inserted, true, 0);
   }
 
+  /** Replay each committed event once, including seed and writes from other facades. */
+  private current(): InboxState {
+    for (const event of this.session.snapshotEvents(SessionLogOffset(this.foldedCount))) {
+      this.state = inboxProjectionDefinition.apply(this.state, event);
+      this.foldedCount += 1;
+    }
+    return this.state;
+  }
+
   private locate(messageId: MessageId): { target: InboxTarget; index: number } | undefined {
     for (const target of ["next-turn", "next-step"] as const) {
-      const index = this.state[target].findIndex((message) => message.id === messageId);
+      const index = this.current()[target].findIndex((message) => message.id === messageId);
       if (index >= 0) return { target, index };
     }
     return undefined;
@@ -141,7 +190,7 @@ export class ZcodeLoopInbox implements Inbox {
     discardRemoved: boolean,
     turn: number,
   ): UserMessage[] {
-    const inbox = this.state[target];
+    const inbox = this.current()[target];
     const truncatedStart = Math.trunc(start);
     const offset = Number.isNaN(truncatedStart) ? 0 : truncatedStart;
     const actualStart = offset < 0
@@ -153,34 +202,23 @@ export class ZcodeLoopInbox implements Inbox {
       inbox.length - actualStart,
     );
     if (actualDeleteCount === 0 && inserted.length === 0) return [];
-    const candidate = inbox.toSpliced(actualStart, actualDeleteCount, ...inserted);
-    const ids = new Set<string>();
-    for (const message of target === "next-turn"
-      ? [...candidate, ...this.state["next-step"]]
-      : [...this.state["next-turn"], ...candidate]) {
-      if (ids.has(message.id)) {
-        throw new Error(`message "${message.id}" is already pending`);
-      }
-      ids.add(message.id);
-    }
-    this.state =
-      target === "next-turn"
-        ? { "next-turn": candidate, "next-step": this.state["next-step"] }
-        : { "next-turn": this.state["next-turn"], "next-step": candidate };
     const outcome = discardRemoved && actualDeleteCount > 0 ? ("canceled" as const) : undefined;
-    this.session.append("agent/inbox/spliced", {
+    const splice: SessionEventMap["agent/inbox/spliced"] = {
       target,
       start: actualStart,
       ...(actualDeleteCount === 0 ? {} : { removedCount: actualDeleteCount }),
       inserted,
       ...(outcome === undefined ? {} : { outcome }),
-    });
+    };
+    foldInboxSplice(this.current(), splice); // Reject duplicate commands before persisting.
+    const event = this.session.append("agent/inbox/spliced", splice);
+    this.current();
     const removed = inbox.slice(actualStart, actualStart + actualDeleteCount);
     for (const message of removed) {
       if (discardRemoved) this.emitLive?.("agent/inbox/discarded", { message });
       else this.emitLive?.("agent/inbox/claimed", { message, turn });
     }
-    for (const message of inserted) this.emitLive?.("agent/inbox/inserted", { message });
+    for (const message of event.data.inserted) this.emitLive?.("agent/inbox/inserted", { message });
     return removed;
   }
 }

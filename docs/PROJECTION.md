@@ -10,6 +10,24 @@ UI 永远看不到**」的契约清单。
   vendored 基准 commit `4a836e6`、`vendor/zcode/` 与 `reference/` 逐字节一致；
   **vendor 升级时本文档需重盘**。盘点日期 2026-10-16。
 
+## Durable inbox 会话投影（2026-10-17）
+
+`src/inbox.ts` 提供与 stock 相同的 `inbox` 投影：`stateVersion: 1`，初值为
+空 `next-turn` / `next-step`，仅折叠 `agent/inbox/spliced`。`sessionProjections`
+在场时，loop 与 `turnBoundary` 一并注册它；`stateOf(session, "inbox")` 和
+`snapshot(session).values.inbox` 返回有序完整消息，保留 id、content 与 source。
+插件卸载自动移除注册；无投影服务的最小环境仍可使用 inbox 命令。
+
+队列与公共投影共享严格 splice 折叠。队列首次读取重放 seed/resume 日志，后续
+按 watermark 补读已提交事件，因此重建后 pending 不会消失，已消费输入也不会
+重复出现。非法持久坐标或跨队列重复 id 抛出带 session seq 和 cause 的错误；
+命令传入的坐标仍按 JavaScript splice 规则归一化，重复 id 在落盘前拒绝。
+
+`pnpm verify:inbox-projection` 使用真实 session、registry、loop 插件及 mock adapter，
+对照已安装 stock loop 的公共 state/wire 读面，覆盖双队列命令、claim/clear、
+非法历史、seed 与 JSONL 冷恢复后实际消费、卸载和无服务回退。浏览器队列展示
+依赖的 live inbox 事件仍由现有 agent dispatch 发出；该脚本不代替 UI 验收。
+
 ## 口径
 
 | 分类 | 数量 | 含义 |
