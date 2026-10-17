@@ -118,3 +118,9 @@ trace、bundle），可直接肉眼检查。
 - 引擎能力层的完整桥接盘点（按模块、含量化口径与建议接入顺序）见
   [docs/CAPABILITIES.md](docs/CAPABILITIES.md)；事件投影层（84 种引擎事件的
   翻译/丢弃明细）见 [docs/PROJECTION.md](docs/PROJECTION.md)。
+
+### 可重跑的 stock 宿主契约验证
+
+`pnpm verify:matrix` 用已安装 `@deepseek-ai/dsh@0.2.1-alpha.5` 的 stock loop 与 ZCode loop 实际双跑 basic-text、todo-tool、goal-round/source/authority 场景。默认报告写入 `.agent-work/tmp/contract-verification/report.json`，可用 `--out DIR` 指定目录；`--strict-coverage` 对缺口增加门禁。运行后可用 `pnpm verify:contracts:selftest` 验证负向变异与重复运行确定性。
+
+执行 PASS 要求双方场景有效且没有未允许差异；当前初始差分会如实报告 FAIL（包括注册集和事件结构差异），不能把场景断言通过等同于契约一致。完整 shipped base/web profile 家族与最小 mock fixture 分开统计；compact、side 和其他未运行家族显式无场景。此验证不证明 rewind、文件回滚或记忆能力。命令、退出码、归一化/允许项精度、扩展和升级流程见 [CONTRACT-DIFFS.md](docs/CONTRACT-DIFFS.md)，覆盖边界见 [CONTRACT-MATRIX.md](docs/CONTRACT-MATRIX.md)。

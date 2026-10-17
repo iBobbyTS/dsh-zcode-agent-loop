@@ -251,3 +251,7 @@ dsh 插件（`src/`）中的桥接现状。覆盖**引擎能力层**；姊妹篇
 | 压缩策略 | `compact.enabled` / `thresholdPercentOverride` | auto-compact 缺省开启但不可配；阶段 5 实测用 `contextWindow` 小值触发（已可用） | 未决 |
 | 语言 | `language` | 影响 dsh 装配外的引擎自带段落（当前未用） | 未决 |
 | 工具并发 | `toolConcurrency.maxConcurrency` | 与 dsh 管线并发策略对齐时需要 | 未决 |
+
+<!-- BEGIN host-contract-evidence-reference -->
+宿主契约的可重跑证据与本页引擎能力盘点分别管理：见 [CONTRACT-MATRIX.md](CONTRACT-MATRIX.md) 和 [CONTRACT-DIFFS.md](CONTRACT-DIFFS.md)。`pnpm verify:matrix` 生成实际 npm stock/ZCode 双跑差分、源码义务及 shipped profile 家族矩阵；执行失败、允许差异与覆盖缺口单独呈现，不代表本页能力已全部桥接。
+<!-- END host-contract-evidence-reference -->

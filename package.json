@@ -26,7 +26,9 @@
     "verify:pipeline": "tsx scripts/pipeline-integration.ts",
     "verify:smoke": "node scripts/smoke.mjs",
     "verify:source-fidelity": "tsx scripts/source-fidelity-integration.ts",
-    "verify:goal-chain": "tsx scripts/goal-chain-integration.ts"
+    "verify:goal-chain": "tsx scripts/goal-chain-integration.ts",
+    "verify:matrix": "tsx scripts/verify-matrix.ts",
+    "verify:contracts:selftest": "tsx scripts/contract-verification/selftest.ts"
   },
   "dependencies": {
     "@zcode/contracts": "workspace:*",
