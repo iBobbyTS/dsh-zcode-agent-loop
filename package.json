@@ -36,7 +36,9 @@
     "verify:classify": "tsx scripts/contract-verification/classify.ts",
     "verify:classify:selftest": "tsx scripts/contract-verification/classify-selftest.ts",
     "verify:contracts": "tsx scripts/contract-verification/check.ts",
-    "verify:contracts:status-selftest": "tsx scripts/contract-verification/status-selftest.ts"
+    "verify:contracts:status-selftest": "tsx scripts/contract-verification/status-selftest.ts",
+    "verify:capabilities": "tsx scripts/contract-verification/capabilities.ts",
+    "verify:capabilities:selftest": "tsx scripts/contract-verification/capabilities-selftest.ts"
   },
   "dependencies": {
     "@zcode/contracts": "workspace:*",

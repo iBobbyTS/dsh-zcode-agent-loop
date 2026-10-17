@@ -1,0 +1,1036 @@
+{
+  "schemaVersion": 1,
+  "groups": [
+    {
+      "id": "turn-entry",
+      "title": "主循环、转向和取消入口",
+      "disposition": "bridged",
+      "reason": "dsh Agent 的 drain/steer/cancel 调用 executeTurn、steerTurn 和 abortSignal；这是源码接线证据，行为覆盖仍由单独场景说明。",
+      "evidence": [
+        {
+          "file": "src/agent.ts",
+          "needle": "await runtime.executeTurn("
+        },
+        {
+          "file": "src/agent.ts",
+          "needle": "await runtime.steerTurn("
+        }
+      ],
+      "members": {
+        "api.executeTurn": "9c7b438db78b6df4712d693527f81413aab018250906c020901ce9141103023b",
+        "api.steerTurn": "f3528d0c769505908873c7eaf9b6e79df49685c0f70395fb4a388646b780835e",
+        "turn.abortSignal": "19db7cd572297e7aad841ca40f810f3b4ecb15726a1f0df533a03c9bc440c636"
+      }
+    },
+    {
+      "id": "model-selection",
+      "title": "模型选择与流式配置",
+      "disposition": "bridged",
+      "reason": "dsh 模型选择事件和 streaming 配置进入引擎，模型调用经 dsh adapter。",
+      "evidence": [
+        {
+          "file": "src/index.ts",
+          "needle": "const runtime = createEmbeddedEngine("
+        },
+        {
+          "file": "src/index.ts",
+          "needle": "runtime.setSessionModelSelection("
+        }
+      ],
+      "members": {
+        "api.setSessionModelSelection": "abed7baa9cb49f985941dca037ba60e60d53828d011d7b04ef8ed81705098fbc",
+        "config.modelSelection": "236e8fc1d3f9d71a44c2bbf404cf7c37f4d6e0b5dbd4151f949263a3b2f357a6",
+        "config.modelStreaming": "2a8d45a7776cc93221ffaaac67b97b239a5dd51b0c31fa46c6d119a02cff6541",
+        "deps.modelFactory": "1a6509a69bce69d3323057b687817f63caacf2d74cba4c21186e10f4ab6e6814"
+      }
+    },
+    {
+      "id": "system-context",
+      "title": "dsh 提示与工作目录",
+      "disposition": "bridged",
+      "reason": "dsh 装配提示和工作目录传入引擎；contextBuilder 仅构造期有效，持续提示走 systemPrompt，热更新仍有限。",
+      "evidence": [
+        {
+          "file": "src/index.ts",
+          "needle": "systemPrompt: promptAssembly.prompt"
+        },
+        {
+          "file": "src/bridges/system-prompt-bridge.ts",
+          "needle": "assembleDshSystemPrompt"
+        }
+      ],
+      "members": {
+        "config.systemPrompt": "179435cb892c1c08f7e33cf9252792261c9a440ef7a4bfe859df48c774048ec8",
+        "config.workingDirectory": "0cd6838e128e6a1061d6f1c970db54de08b3bb3a49aac4ea2c484c8209f5828c",
+        "deps.contextBuilder": "e6c335f6c66f32401762a18e2045ce89274e700ebb4293bd72740a7460c1a30a"
+      }
+    },
+    {
+      "id": "tool-registration",
+      "title": "dsh 工具注册和缓存刷新",
+      "disposition": "bridged",
+      "reason": "只把 agent scope 下的 dsh 工具同步到引擎，每 turn 失效工具缓存。",
+      "evidence": [
+        {
+          "file": "src/agent.ts",
+          "needle": "invalidateToolCache()"
+        },
+        {
+          "file": "src/index.ts",
+          "needle": "toolAllowlist: []"
+        }
+      ],
+      "members": {
+        "api.invalidateToolCache": "243884a72398c830c8fbdf4b7a01e67e149497874c2e32daf4d855076209edcd",
+        "deps.toolRegistry": "2cee0e049b4663c0093efea3360663775e74f9af43bcf4184576d6a8cb4447cc",
+        "config.toolAllowlist": "e6f5629c4f136f8e3d20a9a352991d2a58696f5a5f8796736918bbfb93ed4139"
+      }
+    },
+    {
+      "id": "event-persistence",
+      "title": "事件桥与冷恢复",
+      "disposition": "bridged",
+      "reason": "主会话事件写入 dsh；resume/fork seed 经既有适配器水合。部分事件丢弃和宿主历史替换同步限制继续单列。",
+      "evidence": [
+        {
+          "file": "src/index.ts",
+          "needle": "await runtime.resumeFromStore("
+        },
+        {
+          "file": "src/bridges/resume-adapter.ts",
+          "needle": "persistedMessages"
+        }
+      ],
+      "members": {
+        "deps.eventStore": "b4d6546255e85f2ecdcc0873648435c38b1996f6fde6e02d6650fc1fa9bc87bb",
+        "deps.sessionStore": "823c21f2af0cd57f0d90bf9f8d1b0a718b544e97143c55ca4d4800d0d8d65d9b",
+        "api.resumeFromStore": "edb07eaf1f08ed4d5d3425d1594ce184fb92ea8f11bc38061b53825fef1eea2b"
+      }
+    },
+    {
+      "id": "logger",
+      "title": "引擎日志",
+      "disposition": "bridged",
+      "reason": "logger 适配器输出到 dsh 日志和 stderr。",
+      "evidence": [
+        {
+          "file": "src/index.ts",
+          "needle": "logger: dshLogger"
+        },
+        {
+          "file": "src/bridges/logger-adapter.ts",
+          "needle": "console.error"
+        }
+      ],
+      "members": {
+        "deps.logger": "1a085e563e7f6dd083c115ba6fc58af2df1523b4d8b9321e9288f1ed66aded40"
+      }
+    },
+    {
+      "id": "core-internal",
+      "title": "核心循环内部调度与读取",
+      "disposition": "engine-default",
+      "reason": "这些公开辅助接口在引擎核心执行中服务于调度、事件和状态读取；桥没有额外宿主按钮，不将接口数量视为独立产品功能或已验收入口。",
+      "evidence": [
+        {
+          "file": "vendor/zcode/apps/zcode-cli/packages/core/src/runtime/methods/index.ts",
+          "needle": "proto.executeTurn = executeTurn"
+        },
+        {
+          "file": "vendor/zcode/apps/zcode-cli/packages/core/src/runtime/agent-runtime.ts",
+          "needle": "deps.now ??"
+        }
+      ],
+      "members": {
+        "api.appendEvent": "74d37efc7f77a46cebd13ab410874caefa29f14a0e9c7e8a2ec91aed83ec2176",
+        "api.executeTools": "383c35a157e433503367c46c674d05521e0886c21240f6d1945f281073d62e51",
+        "api.scheduleTools": "0b77f080e87c9cd1cbbe76e1200eb1e4fe4411aedca0b33d719d463443538428",
+        "api.getToolRegistry": "bd905a407761ce87477be5dcaafbef89c93506115530366a85905286b7a2c477",
+        "api.getToolExecutor": "8923f04d6bdede3251a888ba2efa8202d8df93176c9d12dad3c4dc9e5a02eba3",
+        "api.getContextBuilder": "88454395e4a8c9bf39c95d652a30919e39bc1312e9f8c39224e596dcc4ba2a82",
+        "api.getProjection": "eafad7a3efc53e4492f04dc4a3056b1150eabd65f2da4761f59b676a227e8f12",
+        "api.getSessionEventStore": "b5dd76c2c18c8d8ec0eab336a04532a69199e1fe826658c48331372f049b38b4",
+        "api.getSessionId": "c63229a66d98e781a050b6a75dd678cf5ddea390a8070b2b849d55be768935ce",
+        "api.getProjectId": "e999074057d9e059d146d89a863b2b764507455485f2032b525e8e4bf26bdfbe",
+        "api.getSessionModelSelection": "84f6cef9ed1409c9020faaec1568ebedb97797dfcc60aba3de23925181461e56",
+        "api.isSessionPersisted": "b93daec47b31ce3f0f0cf83f01e1b614f88f53377b650d23491fddd8e25f1fe5",
+        "deps.now": "9b87db47472fe4897b8303f1bfb5eb16ab8290228e1dda3343d81698a60a8783"
+      }
+    },
+    {
+      "id": "default-policy",
+      "title": "引擎默认策略行为",
+      "disposition": "engine-default",
+      "reason": "预算和异常保护使用引擎默认值；宿主未提供这些策略的配置入口，因此配置字段另列未接入。",
+      "evidence": [
+        {
+          "file": "vendor/zcode/apps/zcode-cli/packages/core/src/runtime/helpers/runtime-tools.ts",
+          "needle": "deps.toolExecutor ??"
+        },
+        {
+          "file": "vendor/zcode/apps/zcode-cli/packages/core/src/runtime/agent-runtime.ts",
+          "needle": "deps.toolScheduler ??"
+        }
+      ],
+      "members": {
+        "deps.toolScheduler": "98c62567648a737dae1667dab0cc80f8ac871e6189b2f360cd983a7200e9812a",
+        "deps.toolExecutor": "5bfabe930d9a521850f3d30e9ada570d429132a8f91fdc82dfec3a6bc333237b"
+      }
+    },
+    {
+      "id": "queue-alternative",
+      "title": "待发队列与输入准入的 dsh 替代",
+      "disposition": "dsh-alternative",
+      "reason": "dsh Agent/Inbox 自行提供入队、编辑、重排和 claim，未调用 ZCode 队列 API；引擎预留/暂停排水等高级语义不宣称等价，单列未接入。",
+      "evidence": [
+        {
+          "file": "src/inbox.ts",
+          "needle": "export class ZcodeLoopInbox"
+        },
+        {
+          "file": "src/agent.ts",
+          "needle": "followup("
+        }
+      ],
+      "members": {
+        "api.admitPrompt": "76a444742ad13a06bd55a1a2158206210a015a3d699b994505330c42b95587d5",
+        "api.enqueueDeferredInput": "9edff79f76c5ab2651e1630cf3f030d0907253a32a92a4e3c714b39bd9528972",
+        "api.editPendingInputById": "09a7a8d14170b13d32e2826bcf58a3b8657f5cbe735f6267b4a598a4974d31cb",
+        "api.removePendingInputById": "12fca84732176e064d7b13040111f7010c1ccb9079971a4c65f997f493892bcd",
+        "api.reorderPendingInput": "d9a1d1788356fd18ae4358451c7fd4332d62e77f7eb37d481e0875d0859dda83",
+        "api.clearAllPendingInputs": "65412e2ca6ab25637a673e5ac12076d404cf6e68e9af8b9ba83e4c31e6316346",
+        "admission.delivery": "86c5e9657d5f450f21a6d30a3e7ab10d214b3129daef7b3fc31b80b7be529e67",
+        "admission.queueDelivery": "e1c20a59f8ebd29ae538f26dddf76c58e7f4fd654fa76cadb312166af12d4779"
+      }
+    },
+    {
+      "id": "queue-advanced",
+      "title": "引擎队列预留及模式控制",
+      "disposition": "not-integrated",
+      "reason": "没有宿主入口控制引擎 reservation、autoDrain/followup 模式和原子 expectedTurnId/requireIdle 条件；现有 dsh 队列不证明这些语义等价。",
+      "evidence": [
+        {
+          "file": "src/index.ts",
+          "needle": "const runtime = createEmbeddedEngine("
+        }
+      ],
+      "members": {
+        "api.reservePendingInputById": "69d36bdd2fc6907d08195e36b9ca9e3be8ebc4eaccff9df069ac8436636e5dab",
+        "api.markPendingInputPromoting": "77a48b8d0a7b0efc0e3fcd3c77947a045b5fbb5ef6ce4626a9d029911cccef4b",
+        "api.releasePendingInputReservation": "460d9da50be031b94b2ea9ee01afe0cb0eefcc7a7382cb181db8fd4043eafc4f",
+        "api.setQueueAutoDrain": "67b5fbecdf5d462212a7beb842b0a8841e891248b13fd3bb3086687456cabdf0",
+        "api.completeExternalQueueDrain": "820b125ce06e29153e8aa9ec19bbc5298bdcdb3a7602543929e8c2dca573e94b",
+        "api.setFollowupMode": "902af1a6bcf637b71f635aeff25f883b4772ca3c1e25b1ef61814e2a0c1d2f40",
+        "admission.expectedTurnId": "b408e70267a0dc5e8c2916d96e1faa57617b585fed14cce6b2fe072afddc095a",
+        "admission.requireIdle": "361cc967fbc9784b6fb51011e37537926b13327d757ab6eb7a40db761525a93c",
+        "admission.requireQueue": "b3aeb0f6e9f82dc8fb69c28dec243a2bd609891dd90ce3763b65e4020ec25c40"
+      }
+    },
+    {
+      "id": "compact-command",
+      "title": "引擎手动 compact/goal 命令准入",
+      "disposition": "not-integrated",
+      "reason": "admitPrompt 的 commandKind 未转接，现有 dsh /compact 是独立宿主历史事务；外部压缩后的历史尚未同步回嵌入引擎。自动压缩可运行不等于手动入口已接入。",
+      "evidence": [
+        {
+          "file": "src/index.ts",
+          "needle": "const runtime = createEmbeddedEngine("
+        },
+        {
+          "file": "vendor/zcode/apps/zcode-cli/packages/core/src/runtime/types.ts",
+          "needle": "commandKind?: \"sendText\" | \"sendGoalCommand\" | \"compact\""
+        }
+      ],
+      "members": {
+        "admission.commandKind": "9cadd3bfec56502cc5a54567cd6cb99a55c4f12cebf0b0b37b2851e3ccac386b"
+      }
+    },
+    {
+      "id": "compact-policy",
+      "title": "压缩策略配置入口",
+      "disposition": "not-integrated",
+      "reason": "引擎自动压缩按默认策略运行，插件没有传入 compact 策略，也未暴露 enabled/阈值/microcompact 等设置；宿主压缩事务和事件投影不宣称同步。",
+      "evidence": [
+        {
+          "file": "src/index.ts",
+          "needle": "const runtime = createEmbeddedEngine("
+        },
+        {
+          "file": "vendor/zcode/apps/zcode-cli/packages/core/src/compact/policy.ts",
+          "needle": "export interface AutoCompactPolicyConfig"
+        }
+      ],
+      "members": {
+        "config.compact": "73802d5503fd6e23f7cc2601e7b56a5ff25e311fda9c37a47461425499e9c65b",
+        "compact.enabled": "1c1830c4d1bcae4738ec4253df44000a57f39a0f092a14e39c5b4b7ce3a81110",
+        "compact.contextWindow": "68923d7eaf035a60142c1430bbcf14dcc9a597003ba77c331265181ef2ce32c7",
+        "compact.maxOutputTokens": "01e464e3ef9bbdaeeef6992bc0c55ff485a2d8ad8068ed425042ad3d94b1a0c9",
+        "compact.modelContextBudgetStrategy": "a694a8ff6b4fb14fb24eff122dbb8f0af3a3acf0b1178895cf5e1d5f781f290b",
+        "compact.summaryReserveTokens": "7a4e30ad8f8c31e487c2dcf63d63a9a7d91a887d35e494c2a3a94e249d0d1d9e",
+        "compact.bufferTokens": "8203eb570a4d184e82f41b755bf07d036c0491f1fdfdeadea6e2b10d1fe24ca0",
+        "compact.thresholdPercentOverride": "469b37385696187fb95f8d3dcbd7c1ad43d85361a10ca848bb4b5a128350b068",
+        "compact.maxConsecutiveFailures": "6547e09fe7fc8af2462f40f534359cc7910c9249cc236090044917086f34b99b",
+        "compact.microcompact": "0a706bfdb819e3c992f51c83d22027c75ac3598bb4c4b03b6882f5a3adfbae61"
+      }
+    },
+    {
+      "id": "runtime-policy-knobs",
+      "title": "循环和调度策略配置",
+      "disposition": "not-integrated",
+      "reason": "这些引擎配置未通过插件 Config 或宿主命令暴露；引擎默认运行并不能算作可配置入口。",
+      "evidence": [
+        {
+          "file": "src/index.ts",
+          "needle": "const runtime = createEmbeddedEngine("
+        }
+      ],
+      "members": {
+        "config.maxTurns": "55d37570c12064c1433a56c0928357a8be1f30581694a3d0c464b1f0918cccaf",
+        "config.toolConcurrency": "46b4a6abfef71fe458206f4e6b65fc5493f093920e347b7ce7c094f2a4c3b4fc",
+        "config.streamingToolExecution": "1f8abb3902f66fa570a5b89e9111dd1f54a8ee2e059dd89e3c90878abc32ed38",
+        "config.modelContextBudgetStrategy": "a694a8ff6b4fb14fb24eff122dbb8f0af3a3acf0b1178895cf5e1d5f781f290b",
+        "config.modelAnomalyGuard": "79f45edabb22fee6f23b9b2276364ac2afd44483cbc19802361287d4751027ae"
+      }
+    },
+    {
+      "id": "rewind",
+      "title": "对话回退/重跑",
+      "disposition": "not-integrated",
+      "reason": "引擎有 rewindConversationToMessage，但桥无调用入口；需要和 dsh surface 修剪事务对齐，尚未实现。",
+      "evidence": [
+        {
+          "file": "src/index.ts",
+          "needle": "const runtime = createEmbeddedEngine("
+        },
+        {
+          "file": "vendor/zcode/apps/zcode-cli/packages/core/src/runtime/methods/rewind-message.ts",
+          "needle": "rewindConversationToMessage"
+        }
+      ],
+      "members": {
+        "api.rewindConversationToMessage": "4a1d5a84dcfe7cd6f14722b02cc560c40be7fe6acebe24a4e2ecd86a068b9077"
+      }
+    },
+    {
+      "id": "checkpoints",
+      "title": "工作区检查点与文件回滚",
+      "disposition": "not-integrated",
+      "reason": "引擎可列检查点、预览/应用回滚；桥未提供工作区检查点端口和操作入口。dsh session checkpoint 不是文件回滚等价物。",
+      "evidence": [
+        {
+          "file": "src/index.ts",
+          "needle": "const runtime = createEmbeddedEngine("
+        },
+        {
+          "file": "vendor/zcode/apps/zcode-cli/packages/core/src/runtime/methods/file-rewind.ts",
+          "needle": "applyWorkspaceFileRewind"
+        }
+      ],
+      "members": {
+        "api.listWorkspaceCheckpoints": "d93c8d4f85679a03cbd3f164b55663198fd4789782eb3ba98c7a0219dd33dd54",
+        "api.previewWorkspaceFileRewind": "8222706d9a3af93f93a9fb6e2b83970f268f24acc8dfe3de244c83809071f15b",
+        "api.applyWorkspaceFileRewind": "9ad5e5bdb6c772025dff3754d44bcaa73f9d31d0e10934569e2df8a97519c971"
+      }
+    },
+    {
+      "id": "special-forks",
+      "title": "工作区 fork、稳定边界与选区旁路会话",
+      "disposition": "not-integrated",
+      "reason": "普通 dsh 会话 fork 已经由 seed/resume 承担；这些引擎专属的工作区/消息边界/选区 API 尚无入口，不把普通 fork 扩大为全量覆盖。",
+      "evidence": [
+        {
+          "file": "src/index.ts",
+          "needle": "const runtime = createEmbeddedEngine("
+        },
+        {
+          "file": "vendor/zcode/apps/zcode-cli/packages/core/src/runtime/methods/session-fork.ts",
+          "needle": "createSelectionSideConversation"
+        }
+      ],
+      "members": {
+        "api.forkWorkspaceFromCheckpoint": "c78322d5434128d3bc5d1bd8fe0530749153a491278f263ea09d38e95529383f",
+        "api.forkStableConversationAtMessage": "d9367a5f99c3e84686674f5b16cf6b515a9e160abcfe39a11235bf2d41224e78",
+        "api.createSelectionSideConversation": "25021a4efb9fe8c45b7b7656b1a7ac9087bba9361a2069df10a4d84975c1a81f",
+        "api.forkConversationBeforeMessage": "148761bfe16b681d8032856421329920965cc8494b9bc5d6d108785f12999b93"
+      }
+    },
+    {
+      "id": "project-memory",
+      "title": "项目记忆提取、召回和存储",
+      "disposition": "not-integrated",
+      "reason": "未配置 memory/storageRoot，也未提供 extraction drain 或状态入口；dsh 当前没有对应的项目记忆替代链路。",
+      "evidence": [
+        {
+          "file": "src/index.ts",
+          "needle": "const runtime = createEmbeddedEngine("
+        },
+        {
+          "file": "vendor/zcode/apps/zcode-cli/packages/core/src/runtime/types.ts",
+          "needle": "export interface MemoryRuntimeConfig"
+        }
+      ],
+      "members": {
+        "config.memory": "cdaa3a19eaad385c1976617f6cf573dec96e9e1e196d1953fa02bf55dc0d2677",
+        "memory.cliStorageRoot": "0a1ac897e1ba5e2013c2e5a8afd79eeda86f694bca5b0aa83c6ed04e7b89697c",
+        "memory.enabled": "1c1830c4d1bcae4738ec4253df44000a57f39a0f092a14e39c5b4b7ce3a81110",
+        "memory.extractionEnabled": "375846bd358becef2a62dc870bc0e45178abbac61537bba0074d656d657b54d4",
+        "memory.storageRoot": "ae9dfbcaa17c75d619fcff9f8eb670233158f1d577d6161b8306e0d54e2886dd",
+        "memory.use": "00f7edeae3b10485e2a58ee9beefdb5eb53ffad685507369b1c5525281a13f5f",
+        "memory.workspaceIdentity": "bb311bd197bd6f40e948f93db5c2801a82b801a5550c9badeedc3546102b6ace",
+        "deps.memoryRoot": "4ed8d814d357f595922c93d914affcca48ba6eb1c3ba03f4d63f8c90e9424e9c",
+        "api.isProjectMemoryEnabled": "96fadf4bd17b6104c5c26a6b13931a75784d8ac32f2bc4bf7e5892a8cf2d0bdd",
+        "api.drainMemoryExtractions": "ebe1eb0896887e9cc9f4f4a878dc58c55df72b8ff42e02d50b59935904f316ec"
+      }
+    },
+    {
+      "id": "permission-alternative",
+      "title": "dsh 权限和 plan 模式",
+      "disposition": "dsh-alternative",
+      "reason": "权限交给 dsh tools/pre-execute 和 plan/approval 管线；引擎自身权限 API/config 不开放，broker 直通，二者不宣称逐项协议等价。",
+      "evidence": [
+        {
+          "file": "src/engine-facade.ts",
+          "needle": "createAllowThroughPermissionBroker"
+        },
+        {
+          "file": "src/bridges/tool-bridge.ts",
+          "needle": "ctx.tools.execute"
+        },
+        {
+          "file": "@deepseek-ai/dsh-plan-mode/package.json",
+          "needle": "\"name\""
+        }
+      ],
+      "members": {
+        "api.getMode": "9d88394ea440c7cc5b3e4e7a6c7821037cb3c96a2e13321d4112e716c6c90e16",
+        "api.getPlanEnabled": "679fbcbbc7df38ac365c383f1946f134868c86e18cf799fff3c2e5004c87c323",
+        "api.grantPermissionFullAccess": "db482a4681a53c9a861f4c03baa558352606746994c39a1abb84832fac6c6815",
+        "api.setExecutionState": "7abf54d2031c3127cb4314a901e517a4908fdb4c13e9419ab3ce43ae9d1add68",
+        "api.emitModeChanged": "759828df5aea83754a547d61e1520de962c0f4e46711949e02b5cdb5b9c65090",
+        "api.emitPermissionRequest": "da62833c46f1eb7c9bb81daa5008d9af2c32bc4d2963893a8612f28d814a6968",
+        "api.resolvePermission": "899daaab0fe18f5afbdca33e7e2760da1356d272b412a592807deace19ea6989",
+        "api.getPendingPermissionRequests": "05d8ea3a626917d829362a65b7dd223488d22e55f759941e5903bda45ea9b3df",
+        "api.lastPermissionGrantId": "21736892304c1d8634f1d07e5603a89f83a2f36bfba5380ca64cbf8071fd1588",
+        "api.updateConfig": "c1751b3fb32c3fe74ff1d5443724d2be61acb1681d699494768f59bda4de8c1b",
+        "config.mode": "d876f1267f89c06c941387217989060dbbfcf9aea5774676c3805cafe5f3bce4",
+        "config.planEnabled": "b9977fc031a784e0019b20ba2d20e5f7b0f800f5060c84e7c297f57ef2174cff",
+        "config.permissionTimeoutMs": "877aa888f5d39d1acab6f402d29e611650340770d8c129d11dfd285e241f7f49",
+        "deps.permissionService": "08b3d1eadf75241993c648e29c3f540a77dd7fe38892d24016a60ba09280d905",
+        "deps.permissionBroker": "079a4aebee15df510702fb638639a1bf06ca49db1b2d37a4d77d726aa04fb1ba",
+        "tool.enterPlanModeToolEntry": "e145c51b3f59b9003ab181be024fa7d757ae2baba1897cddbde52abcd189bbc2",
+        "tool.exitPlanModeToolEntry": "164a3cdf42d77253f1794490a210eec77fcf4c5d331a34e0770454a7ca41e921"
+      }
+    },
+    {
+      "id": "goal-alternative",
+      "title": "dsh goal 与 todo 链路",
+      "disposition": "dsh-alternative",
+      "reason": "使用 dsh goal/round-driver/todo 工具；ZCode target 状态和续跑 API 未调用，语义不同构。",
+      "evidence": [
+        {
+          "file": "src/bridges/tool-bridge.ts",
+          "needle": "ctx.tools.execute"
+        },
+        {
+          "file": "@deepseek-ai/dsh-goal-round-driver/package.json",
+          "needle": "\"name\""
+        }
+      ],
+      "members": {
+        "api.recordTargetChanged": "ef7e0a596f5c9fdd108ffb10fc50342744adbe8f6c9d36b4c9e078d4fbf7d819",
+        "api.recordGoalStateChangeReminder": "489868d842228eae0dd78e59b5b28ea4cbe98311cc33ff5bcef22c14841af68b",
+        "api.continueActiveTargetIfIdle": "2ad68c48a66dd58b0ef35c9ab3c253d32fd0994c6237a9b68f890e464cbf613e",
+        "api.continueActiveTargetLoop": "6538fed2e5c926f8f7fb4508ea2a6ae9ddbf9872219aa470ca157e289d58547d",
+        "api.activatePausedTargetAfterResume": "17dbcfc04ddec29502bc81a556c6af3a9300770d10b356ef21a8253767f0d1f1",
+        "config.targetCompletionVerification": "cec25af02c1c82e1098f4ceb3f47f43986907e2ff2e1dfc269c2a93b170dfb17",
+        "turn.continueActiveTargetAfterTurn": "1a667c8fb6a139311cc0569a32de3d9db93e6ec52381f552e4cbb5a5f3632631",
+        "turn.targetId": "6ff1af5c22a35314ad21846223340deaa26aa130e363636d390ff0cbaa65fb62",
+        "tool.todoReadToolEntry": "8c9c41540674d80710ee421292dcc70c903568435e23381fc39eb622b69f1b47",
+        "tool.todoWriteToolEntry": "9167f516c646ee9c9377bcc32583a718d15cebe72a38f53b44ec0a17c574302f"
+      }
+    },
+    {
+      "id": "subagent-alternative",
+      "title": "dsh 子代理与消息工具",
+      "disposition": "dsh-alternative",
+      "reason": "通过 dsh 子代理工具承担派生、控制和消息；ZCode child runtime 端口未接入，不保证 ZCode 专属 coordinator/typed actor 协议。",
+      "evidence": [
+        {
+          "file": "src/bridges/tool-bridge.ts",
+          "needle": "ctx.tools.execute"
+        },
+        {
+          "file": "@deepseek-ai/dsh-tool-subagent/package.json",
+          "needle": "\"name\""
+        }
+      ],
+      "members": {
+        "deps.getAgentDefinitions": "97dedaf82b254d7604db315a64ce2b56b3d97b4e7459d6cce1c3851a1b5b3228",
+        "deps.loadAgentDefinitions": "44ea9f02a2adc89b0ab62cec838f29470a771d91a5633064d364060a9a7c192d",
+        "deps.subagentPort": "2d05a44f0f8bb7912bb31c74a34e1215edfd93555bdbac8169d38273ce3ac1ff",
+        "config.subagents": "bbc7dfbd79810d366869d83329d0a3e329f79ba5e25cba8b5ba87631ca5e6c03",
+        "config.subagentContext": "49f02bafb15b798c775a2caceb7d328062488d334fa68c34cb5bfb437da89941",
+        "api.notifyExternalChildSessionEvent": "7ebb0abfe78d06252c6c45e2cdcfd20cca86f401c569f7a169caadd188bfece7",
+        "api.createChildClientPorts": "b2eac85ef268e1189b00aace3609407e9fdbbd86962fae0783ae74e4577e7065",
+        "tool.agentToolEntry": "e0529f57cc29bf073bef3530838ecb47055665066bcf89590d25b5871ed1a76a",
+        "tool.taskToolEntry": "995a62d599034f71f9f72812c7c1d65043c994ebfe0e21f94403f034911cce5c",
+        "tool.sendMessageToolEntry": "a7fedfc83dcdaaff9446f0a801e11c6ea59d837960c8d082746da8e1148c22d1"
+      }
+    },
+    {
+      "id": "actor-protocol",
+      "title": "ZCode actor 协调和升级协议",
+      "disposition": "not-integrated",
+      "reason": "dsh 工作流/子代理工具不等价于 ZCode respond-to-coordinator、typed submit_result/escalate 协议；桥未提供这些端口和工具入口。",
+      "evidence": [
+        {
+          "file": "src/index.ts",
+          "needle": "const runtime = createEmbeddedEngine("
+        }
+      ],
+      "members": {
+        "deps.coordinatorResponsePort": "12e6ad1256c35a73f007d0a25524798c7175ff7c43c906f3e6d4f2ba6c8c009a",
+        "deps.workflowSubmitPort": "a31ca4993f059152ab45398792b582f5e58127b5dff69f3ad947f5360bd8ddbe",
+        "deps.workflowSubmitSchema": "cf0bb3495afee6a8d9e0eecd71b74e5cb43ef8ebff17bdfe551605b3559183d5",
+        "deps.workflowEscalatePort": "bbd8fb64a80a6836dcbc87a6128a4c4517e702608a50490bd4dc3d792ac9c1f4",
+        "tool.respondToCoordinatorToolEntry": "209ce6a47a8ab32f1fe94cb6c22a84ae253ee730111359c228a695841bfc1e66",
+        "tool.submitResultToolEntry": "7ce0f65361edd57bd5f2564bc52ff48d4a12f7b924e058751da2b62d2fd5f8c1",
+        "tool.escalateToolEntry": "61f89cef318d15823a969e395592b7691bdb4150704ebe47f3070d29765575a5"
+      }
+    },
+    {
+      "id": "workflow-alternative",
+      "title": "dsh 工作流替代",
+      "disposition": "dsh-alternative",
+      "reason": "dsh-tool-workflow 提供宿主工作流；ZCode 动态工作流显式关闭。仅说明存在替代，不保证脚本格式、run 恢复/修订和模型目录协议等价。",
+      "evidence": [
+        {
+          "file": "src/index.ts",
+          "needle": "dynamicWorkflowEnabled: false"
+        },
+        {
+          "file": "@deepseek-ai/dsh-tool-workflow/package.json",
+          "needle": "\"name\""
+        },
+        {
+          "file": "src/bridges/tool-bridge.ts",
+          "needle": "ctx.tools.execute"
+        }
+      ],
+      "members": {
+        "config.dynamicWorkflowEnabled": "32224947a8592d94a94e6994d5ce1401b38a88215c4fc1d9cf2653a22cc5364c",
+        "config.dynamicWorkflowToolsOnDemand": "a7754b329bd3a47318441db95c77d84dccf543c36e41d01c4043858590c3b636",
+        "deps.workflowPort": "93fb5b6ce4c64bc06b68ab78ceb4e73bbcd39627014c7ecab70df878dbe4f82a"
+      }
+    },
+    {
+      "id": "workflow-native",
+      "title": "ZCode 动态工作流完整操作面",
+      "disposition": "not-integrated",
+      "reason": "引擎的启动/修订/恢复、留白、snippet、run 查询与 ListModels 端口未接入；不能用 dsh 工作流存在来覆盖这些具体入口。",
+      "evidence": [
+        {
+          "file": "src/index.ts",
+          "needle": "const runtime = createEmbeddedEngine("
+        }
+      ],
+      "members": {
+        "api.recordDynamicWorkflowRunProgress": "36adc7be44f711b6ebf78ef45a07ff069b0f8874fa3cd47123558f5ad7b20050",
+        "api.activateDynamicWorkflowTools": "649fe9b3acaf3af05ea92c81c2d5394d2dfcf2f01eee34e5d94eec99e7b64599",
+        "api.trackResumedDynamicWorkflowRun": "450bcd2bed033afc664464d1b1566a6d5a3bd923b298b55f02da82afa80f1891",
+        "api.startSavedWorkflowRun": "755474f2a9302cf9ca5084100c9944074bf970845be9bb9d250e242f8abe34c9",
+        "api.amendWorkflowRunSettings": "eb0590d5ef520759c21ba4ad7c4534952f939b6c517a2baecb81889ab4554388",
+        "deps.dynamicWorkflowRunPort": "7e4bc7f7122c3ce7afc7a1b9aaf54c22d74971ebf66e929485630b5554becfc3",
+        "deps.dynamicWorkflowSnippetPort": "0fd48707370551aaa7ef29bcfadce7c3db5d05e28afd174157bef73db294c1f2",
+        "deps.modelCatalogPort": "5c7b087445767b5ed8d1839816c7028a9f61a49c905dde451c3bdcbfaee3946d",
+        "config.workflowActor": "274c949654be6a87b82e6b25a6193d175d81ae1f04d55ed3e27fc9e32d2d75bf",
+        "tool.createWorkflowToolEntry": "444bb9cbab2f4e62d58602b1c757b97a7a5803d18edd57f2377c08c3ed489345",
+        "tool.amendWorkflowToolEntry": "8242afcf69a4b67c084178e0eaf5d3cf692c2aca44818287a2ea994f27f334e1",
+        "tool.saveWorkflowToolEntry": "c76ab2d17f16ebcdda42a59eaf6fc716fc173fe3cc2db677d2dde77fb2e6dcd1",
+        "tool.evalWorkflowSnippetToolEntry": "cfd11669034f6f9e37ca852f90dc72aee9740e22875908ebee877543b24b5ef9",
+        "tool.listWorkflowRunsToolEntry": "81af20950bd89ad2b80444c46dc468070b8f7a7888fc59177664808c4849d8bf",
+        "tool.getWorkflowRunToolEntry": "aa58d6c437954bd02de7dc6e54727b745d385b7ba48d1ba7e1ff2287df9c1d5f",
+        "tool.resumeWorkflowRunToolEntry": "9317c6ab35cb4e8ad1e84bf5bb5e213eb261e61e768c39172c85ea61547f5843",
+        "tool.resolveWorkflowQuestionToolEntry": "67b6f46a77660b678c3774fe087b5239c0d021fff10a648f7dcb28e39318c620",
+        "tool.fillWorkflowHoleToolEntry": "4cc806aecf92ba8a8f9de28877635526d81946faaa74e16676475df224d4ddbb",
+        "tool.listSavedWorkflowsToolEntry": "012e83e3fc8537fdd957b115a7a13b4f526283cc2cef80519b768907815b96ed",
+        "tool.listModelsToolEntry": "012d4d26ef2557b7381286fe74df07e48e59f05252f4f8b0040142a41ec61180"
+      }
+    },
+    {
+      "id": "background-alternative",
+      "title": "dsh 后台作业与调度",
+      "disposition": "dsh-alternative",
+      "reason": "使用 dsh jobs/terminal/schedule 的工具生命周期；引擎后台任务注册表和通知状态不共享，替代不是状态协议一致。",
+      "evidence": [
+        {
+          "file": "src/bridges/tool-bridge.ts",
+          "needle": "ctx.tools.execute"
+        },
+        {
+          "file": "@deepseek-ai/dsh-tool-jobs/package.json",
+          "needle": "\"name\""
+        },
+        {
+          "file": "@deepseek-ai/dsh-tool-schedule/package.json",
+          "needle": "\"name\""
+        }
+      ],
+      "members": {
+        "api.hasRunningBackgroundTasks": "cd5049132e48c322308c41fd00c4413823496088bdfcb06463a215a6522f2802",
+        "api.readBackgroundBashOutput": "d6b346c326d48943bd78f56edc39ede6dafed136a9c3bb920d73b1d5d8f4ffc5",
+        "api.cancelBackgroundTask": "0a331dfeafffb48076bfe146e5c855695a1d9c4613429ccd457ac4bbd2b1c9d9",
+        "api.stopBackgroundTask": "8cb2a3508a9cecf4ab14295b38ed0da2872d8c2684475490345f252fb0c1d909",
+        "api.cancelRunningRuntimeBackgroundTasks": "20f15c84e170570bd73d17069a066a3b62cc3ac37e2b4ea58a977e64d78e4a20",
+        "api.sealBackgroundTaskNotifications": "0f59abca689ef719bfca704fd8575bb15cebbcd382bc5c6367da2dea266ac159",
+        "deps.runtimeTaskRegistry": "db8931c83b902248c6aff20703b22768249fffeda78efdba7bac20f874a1101e",
+        "deps.automationPort": "501be4d6726199320e5ef162895b6dcf29d1e34371d7c12c92d4ca6b46752720",
+        "tool.taskOutputToolEntry": "9ed65d28515aabf8efe77e8f2afa98c770537eb803c1067a7d3d3a6655cf9ec5",
+        "tool.taskStopToolEntry": "f46981bf9c74b5ed2b318f0a1b7f199a8615217f82f9ad5f7ac2a610f496a0b6",
+        "tool.cronCreateToolEntry": "b2bcda000aa1de79963c0f7f70cf30b89405a6ea4326b5942452e2eee879671c",
+        "tool.cronListToolEntry": "eeed5751056eeebdecde4bcae7c26c43fad59d5b1793ae01d1cca8dcd7ad5fa5",
+        "tool.cronUpdateToolEntry": "80281ce434f004b38bbaefd5c65aa24955ad4416f754d3e163698ba46880e1a2",
+        "tool.cronDeleteToolEntry": "72b9181f70fa2f9ce4af75fb7ec3d89549d460b05d127653fbe22dfa6bced8ce"
+      }
+    },
+    {
+      "id": "off-peak",
+      "title": "Off-peak 工具",
+      "disposition": "not-integrated",
+      "reason": "未注入 offPeakPort；普通 schedule 不能证明具备 ZCode off-peak 的产品语义。",
+      "evidence": [
+        {
+          "file": "src/index.ts",
+          "needle": "const runtime = createEmbeddedEngine("
+        }
+      ],
+      "members": {
+        "deps.offPeakPort": "a225f52ce128393ca1c83630f0db8dc584804cc3d30f36a72922d5fd090f7703",
+        "tool.offPeakCreateToolEntry": "8d99432d8ff343992497455681475f5ea6cbc05628c839bfaf2586aad284ab52",
+        "tool.offPeakListToolEntry": "a6f539b156dd0da9a8e9923fef55755761ca6a4fc20362937ffbe92d73c48877"
+      }
+    },
+    {
+      "id": "skill-mcp-alternative",
+      "title": "dsh 技能和 MCP 工具",
+      "disposition": "dsh-alternative",
+      "reason": "dsh 工具管线承接技能与 MCP 注入；ZCode skill catalog/mcp 端口不直接使用，工具存在由实际 profile 决定。",
+      "evidence": [
+        {
+          "file": "src/bridges/tool-bridge.ts",
+          "needle": "ctx.tools.execute"
+        },
+        {
+          "file": "@deepseek-ai/dsh-tool-skill/package.json",
+          "needle": "\"name\""
+        },
+        {
+          "file": "@deepseek-ai/dsh-mcp-resources/package.json",
+          "needle": "\"name\""
+        }
+      ],
+      "members": {
+        "api.getSkillCatalog": "28208e722bdcf696965803b5109c64bf9ebb002f4eb8d8994265a42d78b0d985",
+        "config.skillMetadataBudget": "891b4347351aee4500ff58cd1a44570af2d7c8316ec5df9c1b0bdd53063ce776",
+        "config.mcp": "8bf1fec8618b3a14b23705fa673715eb37408fb1fae36ceff7106a0f509ee0be",
+        "deps.skillPort": "b858c5c0eba70b8d407a4d9f316d0931f9db59f168d1edc19cadca8f0901ba70",
+        "deps.mcpPort": "2b78d8e834722df16ef6c66d7f5f7805a4d1da68787ddeb570f5e1d32ab35aab",
+        "tool.skillToolEntry": "9cb366f880480d27775987a0dda6430be8ad8c439e460c7d25582721e7b78e14"
+      }
+    },
+    {
+      "id": "tool-alternatives",
+      "title": "dsh 文件、shell、搜索、网络和问答工具",
+      "disposition": "dsh-alternative",
+      "reason": "内建工具 allowlist 为空；通用操作由 dsh 工具及其权限管线承担，不能据此推导全部工具参数/媒体处理完全等价。",
+      "evidence": [
+        {
+          "file": "src/bridges/tool-bridge.ts",
+          "needle": "ctx.tools.execute"
+        },
+        {
+          "file": "@deepseek-ai/dsh-tool-fs/package.json",
+          "needle": "\"name\""
+        },
+        {
+          "file": "@deepseek-ai/dsh-tool-web/package.json",
+          "needle": "\"name\""
+        },
+        {
+          "file": "@deepseek-ai/dsh-tool-ask-user/package.json",
+          "needle": "\"name\""
+        }
+      ],
+      "members": {
+        "tool.readToolEntry": "2ac255ec43623ad1a2e6c0ac517460b533b96bfc3e568b87f94b77f1eee16a68",
+        "tool.writeToolEntry": "f896632732df7015049813b132714d133f9d4271f323c2db1af51fbf9defc6d3",
+        "tool.editToolEntry": "ca20045d3d81be9e75e294777aa6341ee2dc97a31a8a2eee030fc2f1a2a6fcfa",
+        "tool.bashToolEntry": "209d17dff440769a5a3509878475ebd48b64a62029c17896b7d2b91a788b2ef9",
+        "tool.globToolEntry": "b05686cfe44a31746a3aa67bf0836be48fddaaf22205780af445b7898540fd90",
+        "tool.grepToolEntry": "1c472542c157257c4fc9589d6194bc68325cfd275b917b5102d3cc185ea50188",
+        "tool.webFetchToolEntry": "3ea336e9ee33f741682b6716670739035b755ef016dbca93c327c5c0d83410b9",
+        "tool.webSearchToolEntry": "73c9ff68f64d8c38e70cd87d5114feca24e6da16f8c0eb573d35bd8ac8d393e9",
+        "tool.askUserQuestionToolEntry": "7af0d470ffad58ef0a9acf2dfeba0b347e84a3245ef6767a71454477e0140316",
+        "deps.executionPort": "ef1c19694760705a0301f60457ea1d8332f5fb44be846a741773181f898f7210",
+        "deps.fileSystemPort": "5a87894daf37f369ea498f4c22631452e64338856d581731d06f20de050833ab",
+        "deps.httpClientPort": "9cbccaf9112e8a859d0d0228acc0b10cf373c9261b979b4177136feaaff9e4a8",
+        "config.bashTimeoutPolicy": "7f46acedcb402adcaf89440f8fef92f9ac174f97407d8ad3f9adbf4156757106",
+        "config.bashShellSelection": "4faee1bbe8705f68f6dea2a403c3c08d082de4069edf93d289197039cb0cac2f",
+        "api.initializeSessionShellEnvironmentIfNeeded": "dfc881d39fda1f0aea081a564d065c98bb3cd08ed8d1c9fd237dfa8794a58bcf",
+        "api.getSessionShellSelection": "f5fc93575b1e75c096b044a94da07cbfc118cea50291db0f320b4639ff7f11b8",
+        "config.embeddedSearchBackend": "cacd98440b082648bd560513591991758b0000cce4b79dbc4399e13e0c207c14",
+        "config.nativeSearchEnhancementsEnabled": "d619395527ff4b0e91328eaf9ab17387743a7202bd2a9e0f64096a57254f8843"
+      }
+    },
+    {
+      "id": "media-native",
+      "title": "引擎媒体处理端口",
+      "disposition": "not-integrated",
+      "reason": "imageProcessor/pdfDocument/artifactStore 未注入；dsh 文件/附件工具可独立工作，但未验证等价于引擎媒体处理链路。",
+      "evidence": [
+        {
+          "file": "src/index.ts",
+          "needle": "const runtime = createEmbeddedEngine("
+        }
+      ],
+      "members": {
+        "deps.imageProcessorPort": "13f6ec23d70c360cc228b99dd8934ddc63dde8eb7195a69b14f92dde6dccabe3",
+        "deps.pdfDocumentPort": "c023c7b86a65c8fe8a225c34777ce5fc030a9c27c0d5487392907de2f29ed971",
+        "deps.artifactStore": "aa87da49106ef1de5742e60fbd99bad1b272513637ce8ba87b9b2dd64f4e1076"
+      }
+    },
+    {
+      "id": "browser-cua-repl",
+      "title": "ZCode 浏览器、CUA、node_repl",
+      "disposition": "not-integrated",
+      "reason": "runtimeFeatures 和 browserControlPort 未配置，内建 js 禁用；额外安装的 dsh MCP 工具不能代表已接通 ZCode agent.browsers/CUA/repl。",
+      "evidence": [
+        {
+          "file": "src/index.ts",
+          "needle": "const runtime = createEmbeddedEngine("
+        }
+      ],
+      "members": {
+        "config.runtimeFeatures": "16e63631a77425764859c44066b60fe99715739c69d023001d1df8c531aa4724",
+        "deps.browserControlPort": "f88cc06ba5290ea816513f961aa7dae9683c606200f2462b69e0975507e8f4bd",
+        "api.closeBrowserSession": "52b9f2384df161e2e5d695ea91c4e1c9608bda4ba9198af56ad159d389e9e755",
+        "turn.browserAmbientContext": "b8808f03086993725aa9f8ed7e910d77ecec6da0987cfd6c105473a59b1c594f",
+        "tool.jsToolEntry": "2e32974146e0fa180e5ebda5a4226e76709417b52638e6f8aeccb48a45544f29"
+      }
+    },
+    {
+      "id": "workspace-hooks",
+      "title": "工作区 hooks 和 mailbox",
+      "disposition": "not-integrated",
+      "reason": "引擎 workspace hook 的 admission/snapshot/lifecycle 和 session mailbox 未接入；dsh 工具前后钩子处于不同层，不能算等价替代。",
+      "evidence": [
+        {
+          "file": "src/index.ts",
+          "needle": "const runtime = createEmbeddedEngine("
+        }
+      ],
+      "members": {
+        "config.hooks": "399201d7d8d24f0bd16210858eb60731de90b76c53ca2ca045c5aed1e1ae5ca7",
+        "deps.hookRunner": "c72294fa6b30253581b218855f9cd2800bc511122c947b16b605ded7397c2f74",
+        "deps.workspaceHookAdmission": "ed614f970e589f2bbc5050eff4673cbbfee9670995f3eaa03dcf75fe10fb3463",
+        "deps.workspaceHookSnapshot": "3860ef88726ee6bb5337608a23f1cadcffb4dd64f8e3bb26f2d51b336f133882",
+        "deps.sessionMailboxPort": "368eedbfd90a1a5b1e46cc37b3caa126c79930870b64651d523dc766022d6c4f",
+        "turn.skipUserPromptSubmitHooks": "327f2cf6e6e7bc5c1e1efae885a730721966927be28b89e3f98c0badaadb5733"
+      }
+    },
+    {
+      "id": "telemetry",
+      "title": "ZCode agent telemetry collector",
+      "disposition": "host-incompatible",
+      "reason": "当前桥/宿主没有 ZCode agentTelemetry 的对应 collector 消费协议，无法直接映射。需要新增宿主适配/插件才能接入，并非引擎永远不可实现；dsh 独立 telemetry 不算同协议。",
+      "evidence": [
+        {
+          "file": "vendor/zcode/apps/zcode-cli/packages/core/src/runtime/types.ts",
+          "needle": "agentTelemetry?:"
+        },
+        {
+          "file": "src/bridges/event-store-bridge.ts",
+          "needle": "switch (event.type)"
+        }
+      ],
+      "members": {
+        "deps.agentTelemetry": "5b484e4ba1118a8e5e78814c368082e8e88586c53eb33eef0b8a342a2db24de5",
+        "deps.agentTelemetryCausation": "dd4a7a82900bd9efe5d8471239f99e8d9b78a5b0f381bb4579dab7d34c6dc8d4",
+        "deps.agentTelemetryCausationMode": "92c2786137fdb5a8cf7dd84021d313b3853411ee319f7cd8291df9bbdbe3d8d2"
+      }
+    },
+    {
+      "id": "trace-projection",
+      "title": "ZCode trace 在 dsh 会话中的结构化投影",
+      "disposition": "host-incompatible",
+      "reason": "当前 dsh 会话事件消费者没有 ZCode trace/span 的直接投影契约；日志可保留 trace，但结构化会话贯穿需扩展宿主协议/消费者。",
+      "evidence": [
+        {
+          "file": "src/bridges/event-store-bridge.ts",
+          "needle": "switch (event.type)"
+        },
+        {
+          "file": "@deepseek-ai/dsh-session/lib/types/index.d.ts",
+          "needle": "SessionEvent"
+        }
+      ],
+      "members": {
+        "deps.traceContext": "f22d7b18a428439d27f5757b67d606161b87fc70d80fc3b81437233632acb998",
+        "turn.traceContext": "f22d7b18a428439d27f5757b67d606161b87fc70d80fc3b81437233632acb998"
+      }
+    },
+    {
+      "id": "prompt-alternative",
+      "title": "dsh 指令与提示配置",
+      "disposition": "dsh-alternative",
+      "reason": "persona、项目指令、环境和日期走 dsh 提示装配；这些引擎字段未直接透传，ZCode 特有 outputStyle 不保证一对一等价。",
+      "evidence": [
+        {
+          "file": "src/bridges/system-prompt-bridge.ts",
+          "needle": "ctx.systemPrompt.assemble(context)"
+        },
+        {
+          "file": "@deepseek-ai/dsh-system-prompt/package.json",
+          "needle": "\"name\""
+        }
+      ],
+      "members": {
+        "config.agentName": "c47c6751319549b9840aef01cf3cb87eb3f3b2674bce4e3da38dcbc399f33104",
+        "config.language": "2fded542b0f7c162b270edec5d4b19e7d7d78c239c664c4ca940bed9da91b64b",
+        "config.outputStyle": "d68895834ff7ac371199a2ba996746c2f4c784ae74b95ecc81d641e7dff641b4",
+        "config.envInfo": "9d89b647de34a5044acf141056e2a95170ec5c663f39b811426c88c0c90db6b8",
+        "config.currentDate": "70319a0d1df2b3bb623047e29e9a2b21870245b0518f30df1a573ebfac5f54db",
+        "config.userInstructions": "aead2957d7c1f6fea89e4f40b423fc1fe9dffcca7c392af49ec56591020dfd9c",
+        "config.projectContext": "5d82b2f280fe3aaa7a33f20ce7fca23ba8cf426020d6d7f4d63c612a54ad5886",
+        "deps.contextSourcePort": "b8a798df9b048ab01445efad569b78320507ec52ccbcc958263e2ac19a0d944d"
+      }
+    },
+    {
+      "id": "title-alternative",
+      "title": "dsh 会话标题",
+      "disposition": "dsh-alternative",
+      "reason": "会话标题由 dsh 插件维护；引擎自有标题生成和设置 API 不提供入口。",
+      "evidence": [
+        {
+          "file": "@deepseek-ai/dsh-session-title/package.json",
+          "needle": "\"name\""
+        },
+        {
+          "file": "src/index.ts",
+          "needle": "const runtime = createEmbeddedEngine("
+        }
+      ],
+      "members": {
+        "config.titleGeneration": "1ae91b8e69125ab0a7d1ef4b7a5846a3cae399e883c1a656a75b0dc50f9b9a9c",
+        "api.setCustomSessionTitle": "2b6132534e7d2d26091c25cb165c2b7fa73863d2dcd35dc41697176840f18e7e",
+        "api.maybeStartSessionTitleGenerationFromExternalInput": "de946a2f6a753e86864aed8a957d84f6d5bbe607564e077ec729693ded2c3ff5",
+        "api.maybeStartGoalSummaryTitleGeneration": "5c602902fa6ff413c63488fec1f6ec82d13a7babaab856f6419b9f6452eca1b4"
+      }
+    },
+    {
+      "id": "auth-alternative",
+      "title": "dsh provider 账户和鉴权",
+      "disposition": "dsh-alternative",
+      "reason": "鉴权由 dsh llm adapter 管理，未注入 ZCode providerRuntimeHeadersPort。",
+      "evidence": [
+        {
+          "file": "src/bridges/model-bridge.ts",
+          "needle": "ctx.llm"
+        },
+        {
+          "file": "@deepseek-ai/dsh-llm/package.json",
+          "needle": "\"name\""
+        }
+      ],
+      "members": {
+        "deps.providerRuntimeHeadersPort": "7f904cb1cda7bbb5aeb90514eb440833e45c50de5864a0ac7586b78af3bb1261"
+      }
+    },
+    {
+      "id": "host-model-utilities",
+      "title": "宿主模型采样、连通性和诊断端口",
+      "disposition": "not-integrated",
+      "reason": "未开放引擎宿主自用 generateWorkspaceText/sampleModel/testModelConnectivity，modelIoDir/admission/resolver 也未注入；普通聊天成功不覆盖这些入口。",
+      "evidence": [
+        {
+          "file": "src/index.ts",
+          "needle": "const runtime = createEmbeddedEngine("
+        }
+      ],
+      "members": {
+        "api.generateWorkspaceText": "98ad91b5f31b8227d597e6035d1dc4db6487d072ed625291df86788b476590d2",
+        "api.sampleModel": "14fb099abfceb325d1ed74523a391f545d70c669e3a76b074c462523158bc0e4",
+        "api.testModelConnectivity": "6042729ab67218d5ecd546d13c12dfbf53c4b7e707955df9b56006aad6b14ae8",
+        "deps.modelIoDir": "65fb6c3ced8f6e01cfc192a7bb67bfbf67a1d4efe10265cf28d29e45d5072eab",
+        "deps.modelRequestAdmission": "06c59438f4ead0ab1da3d53056b22b143acdf9c59f4574cb4813668e32048a61",
+        "deps.resolveEffectiveModelSelection": "f720f5d0da612170d06eb1752babc0601a5b35d6dae27bc29928550091849f92"
+      }
+    },
+    {
+      "id": "session-host-metadata",
+      "title": "ZCode 宿主形态和消息展示元数据",
+      "disposition": "not-integrated",
+      "reason": "桌面/交付面、工作区身份、query/visibility/epilogue 等 ZCode 宿主字段未透传。它们仍列在清单中，不再以边缘或不需要从统计排除。",
+      "evidence": [
+        {
+          "file": "src/index.ts",
+          "needle": "const runtime = createEmbeddedEngine("
+        }
+      ],
+      "members": {
+        "config.clientMode": "d514fd56a45050a0a339576f48bf1ad5556a6a13d7ba3a96557f443eb8ea5ba3",
+        "config.deliveryKind": "c8fafc1e2017399f4f9371db9df30797ea2153c8f8d68b57ea748f7180a6ff59",
+        "config.remoteSessionId": "f05ec4440043cacf0f2eb5e6c1019b2672ad73a9541c6cc929361d43c671327c",
+        "config.presentationSurface": "bd051eaa01a78f5e5b418fde823e2225711397317fcac1f5c8d343bc78c0d0a9",
+        "config.genUiOutputRoot": "e65d7c90e6bd4eaba34ec255d3d7eef8d447438f50941c0f98aab1720e781f9a",
+        "config.parentSessionId": "a520351c7ecc322f2d6ae7b24e1f014321d4abf2b0e781271bfa96697a867d9c",
+        "config.taskType": "9c8fe873883cc41c6c87e24ce4309994d233dfeb264258f7a07f9d480d1c97c7",
+        "config.workspacePath": "099f233211a3375cd271e010130bfeeae7a557a52d94deec10ead206c6adb4d5",
+        "config.workspaceIdentity": "a16cb720371fc874ee88477770f64babdd90f966d3b97c1efa9a0d0b3d3be734",
+        "deps.appVersion": "07b63ca7311a7691c3076c6e5d6c3b7ba8e1b7689be857996222058f885b507a",
+        "deps.isRemoteWorkspace": "61dd365531c790dcbd54b2f81ad2944176b47ecdb96070df4449569162b06a5b",
+        "turn.displayInput": "23e5b22902c47e93382ff4304b27f8208e4294bb62bd843e5e8aeca946dd678d",
+        "turn.epilogueStart": "255fe17557e443911eefb9cbbde120033e98912d6c9c51ce20c70c97341faa52",
+        "turn.inputId": "71e4690cee58f066943b5b98bd4fcbc04e51604ba07327108a49ba5e46009c98",
+        "turn.intent": "dc264c9e6823c5614012abd158e61793074458e21643320f56e7c8e3181a3b36",
+        "turn.sharedContextRefs": "c6e410b6f314340decfaad83dc540d8deee9ff1a6fbe589a4c029076f8ba2f06",
+        "turn.queryId": "2acd54da2be91f203868cbee25b1fecd6dff33a22bcabc44c36c5169c617c42a",
+        "turn.inputPresentation": "e73843e705d07e99cca1d2720943777be1c2e963d04837b468904679f733a712",
+        "turn.inputVisibility": "4b6966320e4caac53a68947aa2f0c6c961d2df3c1ead7495a317b1ef4044fa1b",
+        "turn.originMeta": "22c47dcb4c8b817e5794aa5e40462107ebfbb06086bce230fb861ddff7ced302",
+        "turn.backgroundSource": "c965fd345c6acf8a733dde3d52d618726db245e5d839879020fdb54ecf702a89",
+        "turn.backgroundSubagentResultConsumed": "9a7a5b1e755b10749a7ab56168c0947a360b41d1685fbed56132604d94c284f3",
+        "turn.workflowResultConsumed": "d43a4c77f1572ccb1fbba0b0162cfdb1aea1f720efc7bd3a2ec3082a269b0c17"
+      }
+    },
+    {
+      "id": "input-source-alternative",
+      "title": "dsh 输入来源和模型选择记录",
+      "disposition": "dsh-alternative",
+      "reason": "输入原消息 source 和 model/selection 由 dsh surface/事件桥保存，不经引擎对应元数据入口。",
+      "evidence": [
+        {
+          "file": "src/agent.ts",
+          "needle": "setPendingUserMessages"
+        },
+        {
+          "file": "src/index.ts",
+          "needle": "event.type !== \"model/selection\""
+        }
+      ],
+      "members": {
+        "turn.inputSource": "e19aed3fb662b1aa6d5ce46709683bf5d71347f9882c07dfb32ea0525dc1fe2a",
+        "turn.recordedInputMessageId": "2ee5b9773cdc6b6facf12a8591ab2877d183a327c53fa90eb3b977e2627f21af",
+        "turn.skipInputRecord": "df9c595644c606ce7210cb3a8030003d3b710cd6452734f2c9d7e4d56d146714",
+        "api.recordExternalUserPrompt": "f50a9e97b810b0c461569fad061cb7031a93ed2d14301e0a6efbcf8b96a9651b",
+        "api.recordPendingModelChange": "206ba0b6faaf4b6724eaf9251a4a2060128d52705aab0e1ed996ac5897323028",
+        "api.emitModelSelected": "e061a657a588bea498328ada16e5868c59b35108625063a41bd7cec705278738"
+      }
+    },
+    {
+      "id": "execution-overrides",
+      "title": "单轮模型/工具临时覆盖",
+      "disposition": "not-integrated",
+      "reason": "单轮 modelExecution、selection fallback 和 toolDisallowlist 未开放；会话级模型切换不能覆盖这些执行期语义。",
+      "evidence": [
+        {
+          "file": "src/index.ts",
+          "needle": "const runtime = createEmbeddedEngine("
+        }
+      ],
+      "members": {
+        "turn.modelExecution": "8300bf181b4891b1f40e8b463f276f82780d4f797f9d8d5e7e461dfdb2e8a3f4",
+        "turn.toolDisallowlist": "2eac72da3d930f9d119d4816751e047830193e86c11fff4c5305c3606f32cb51",
+        "config.toolDisallowlist": "2eac72da3d930f9d119d4816751e047830193e86c11fff4c5305c3606f32cb51",
+        "config.toolset": "d8c9405c0d661d611988f8a4ce4b0845eef869a4af4caee4ae7a72ef3de42698"
+      }
+    },
+    {
+      "id": "host-lifecycle",
+      "title": "引擎驻留、前台租约与关闭",
+      "disposition": "not-integrated",
+      "reason": "dsh 有自身 agent 状态与取消，但未映射 ZCode 驻留计数/前台执行租约、beginShutdown 等接口；不把基本取消当作这一整族已接通。",
+      "evidence": [
+        {
+          "file": "src/index.ts",
+          "needle": "const runtime = createEmbeddedEngine("
+        }
+      ],
+      "members": {
+        "api.beginShutdown": "00c5935ac59dd61452ad0566ef2484b6c38eb3a4943e9014e41cfbf214cd956e",
+        "api.getActiveTurnInfo": "e4860a8311c29796fba24cc714a021c90ec2339b2dc36d88111969f8755de97e",
+        "api.hasActiveOrQueuedTurnWork": "5b4e0d45a265c516fbc6c2b62a3e748a00b5e0a26a30836b4d8ba8b22dd8ce02",
+        "api.hasResidencyBlockingWork": "c05e5294064be635b157593811fab4ee431ccde4b05df74e73edcd1ad85e46d9",
+        "api.trackResidencyBlockingWork": "1b19acfd866a22b672551efc1e2a7878e299b926401b546379485e53ccd538fc",
+        "api.getActiveForegroundExecutionId": "e0787b894c9cbf1faedebf81e3df5a47acaf70c9a386cfd2371639bc8e47a031",
+        "api.acquireForegroundPromotionLease": "612e07af87977b3367a43dc132fe2f82a52c6b0c3a105970ca29d441d08c7107",
+        "api.releaseForegroundPromotionLease": "9499f68f497a1f7351d1a1985a15d50284cf8fef2d626b33143a3c733dcba773",
+        "api.stopActiveForegroundExecution": "fa9ae47800f01980ee8cf9fe3aa3b38b2f3d86ba758b9adf30df31afb5fca53b",
+        "api.ensureSessionPersistedForExternalActivity": "391cd29b2d8ffbab17d1f1f96fd78da1763c14ce8b14b2c82b01e133d86ebdeb"
+      }
+    },
+    {
+      "id": "native-observers",
+      "title": "引擎事件订阅与自动输入展示",
+      "disposition": "not-integrated",
+      "reason": "桥使用 eventStore 适配器，无引擎 eventSink/subscribeEvents 的宿主订阅入口，也无 recordUserInputAutoResolutionUpdate 对应展示入口。",
+      "evidence": [
+        {
+          "file": "src/index.ts",
+          "needle": "const runtime = createEmbeddedEngine("
+        }
+      ],
+      "members": {
+        "deps.eventSink": "9f35ebba3bf24264fba31a54c11160acdf6c94b7cbbc23e0cba009291784b28f",
+        "api.subscribeEvents": "f9c1fabb86436a3e7e5d7d25ed64ea96ffb8f49980612ed8b0a14f202d3f5880",
+        "api.recordUserInputAutoResolutionUpdate": "7bda77ad26da9812c2cf545f6f95c87bccd9168e56446bffc375f8208eebfc4e"
+      }
+    },
+    {
+      "id": "plugin-protocol",
+      "title": "ZCode plugin 引用与 channel 资源",
+      "disposition": "not-integrated",
+      "reason": "未配置 pluginReferenceCatalog/topicResourcePort，未注册 ReplyToChannel 和 ReadSessionContext 内建工具；普通 dsh 会话引用不证明专有协议等价。",
+      "evidence": [
+        {
+          "file": "src/index.ts",
+          "needle": "const runtime = createEmbeddedEngine("
+        }
+      ],
+      "members": {
+        "config.pluginReferenceCatalog": "2e6cd0e8cc33fc6103ba01a563376e80f9e2355ae53317410284401b71491aa8",
+        "deps.topicResourcePort": "500cf127fc6ec571ca5403c0571f0f1beb2fb172a8be7db85acca57b72703baa",
+        "tool.replyToChannelToolEntry": "37ef22a8940e42d047c4da21cf0672501d50fe67d493cf12344d7eadfc73b88a",
+        "tool.readSessionContextToolEntry": "5e40fee59f368d51fae138be6e5eb3aada3d980b3015ced33a8869cfa43c0051"
+      }
+    },
+    {
+      "id": "mid-system-policy",
+      "title": "对话中 system 消息策略配置",
+      "disposition": "not-integrated",
+      "reason": "模型能力声明已由 model bridge 传递，但 config.midConversationSystem 的 force/auto 覆盖没有入口。",
+      "evidence": [
+        {
+          "file": "src/bridges/model-bridge.ts",
+          "needle": "supportsMidConversationSystem"
+        },
+        {
+          "file": "src/index.ts",
+          "needle": "const runtime = createEmbeddedEngine("
+        }
+      ],
+      "members": {
+        "config.midConversationSystem": "382aebf9f85d014130dc335ea1d7c8f6a521784ff60c74e11c826be8d8e3c9f4"
+      }
+    }
+  ],
+  "wiring": {
+    "src/agent.ts:api.executeTurn:0": "8007f01d8d9f1690696fc10a50a547e907543643046b031a55be46af99d4040d",
+    "src/agent.ts:api.invalidateToolCache:1": "1a11920d7907065a3e290d1f66ca1ddfeff2d9b7e11e658b00036abdc61ef90b",
+    "src/index.ts:api.resumeFromStore:2": "9e0cda8148f19e7ed192f5daa575a5c94775d6c53cb28f6c9d420c457008d283",
+    "src/index.ts:api.setSessionModelSelection:3": "c35aa1038042a08e1cbbe53efcc79c6f21871312bce3754469ccf54fda3a25d8",
+    "src/agent.ts:api.steerTurn:4": "42c56348779bfdd43b1020a373146bb7a979846fb5720c6b1d01ccb18e6f5548",
+    "src/agent.ts:api.steerTurn:5": "bd870e2810809866af8f02825d2339dfcf529f99ff5c9a5f08db1c7126d724af",
+    "src/index.ts:assembly.createEmbeddedEngine:6": "aa73bce7d3e836cd3dc44388b74be9df3352c4c0480a52dd91b958513ae0d5bf"
+  }
+}

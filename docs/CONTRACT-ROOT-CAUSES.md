@@ -1,6 +1,6 @@
 # Current contract status and historical evidence
 
-`pnpm verify:contracts` is the actionable current gate: it runs each stock/ZCode capture once, validates the installed pinned authority, classifies exact semantic peers, and writes standalone HTML/Markdown plus full raw values. The 2026-10-17 current capture has **292 raw differences, 7 groups, 134 intentional, 158 noise, 0 bridge-gap, 0 unknown**. Its bounded semantic result is **PASS**, while the unchanged raw matrix remains **FAIL** with zero allowances and coverage remains **partial**. Future runs compute their own counts.
+`pnpm verify:contracts` is the actionable current gate: it runs each stock/ZCode capture once, validates the installed pinned authority, classifies exact semantic peers, and writes standalone HTML/Markdown plus full raw values. The 2026-10-17 current capture has **292 raw differences, 7 groups, 134 intentional, 158 noise, 0 bridge-gap, 0 unknown**. Its executed-scenario semantic result is **PASS**, but the combined bridge status is **INCOMPLETE** because the independent [engine entrypoint inventory](ENGINE-ENTRYPOINTS.md) contains unintegrated and host-incompatible capabilities, while the unchanged raw matrix remains **FAIL** with zero allowances and coverage remains **partial**. Future runs compute their own counts.
 
 ```sh
 pnpm verify:contracts
@@ -11,9 +11,9 @@ pnpm verify:contracts:status-selftest
 pnpm typecheck
 ```
 
-The default deliverable is `.agent-work/tmp/contract-classification/report/index.html`. Companion files are `report.md`, `classification.json`, `raw-differences.json`, `check.json`, `matrix/report.json` (complete fresh captures) and `original/` (all historical groups, source citations and 289 raw members). No report build or network dependency is needed. Content is escaped. `verify:classify --input PATH --out DIR` remains available for inspecting saved captures; it does not run scenarios or certify coverage.
+The default deliverable is `.agent-work/tmp/contract-classification/report/index.html`. Companion files include `capabilities.html` / `capabilities.json` / `capabilities.md` for source-derived entrypoints, plus `report.md`, `classification.json`, `raw-differences.json`, `check.json`, `matrix/report.json` (complete fresh captures) and `original/` (all historical groups, source citations and 289 raw members). No report build or network dependency is needed. Content is escaped. `verify:classify --input PATH --out DIR` remains available for inspecting saved captures; it does not run scenarios or certify coverage.
 
-The combined command exits **0** only for all three valid executed scenarios and no detected real/unknown semantic gap; **1** for capture/fixture failure, authority mismatch, known gap, unknown or invalid input; **2** when those semantic checks pass but `--strict-coverage` rejects partial coverage. A failure replaces the current HTML with an explicit failure report. The classifier alone also exits 1 for known gaps or unknowns. Raw differences are recomputed, stale lists rejected, and no production allowance is added.
+The combined command exits **0** for valid executed scenarios and a valid capability inventory, even when explicitly accounted capabilities remain unintegrated; the report still says **INCOMPLETE**. It exits **1** for capture/fixture/authority failure, semantic gaps/unknowns, new or changed capability declarations/wiring or invalid evidence; **2** when `--strict-coverage` rejects partial scenario coverage or `--strict-integration` rejects unintegrated/host-incompatible capabilities. `check.json.status` is the overall result; `scenarioStatus` is the bounded scenario result. A failure replaces the current HTML with an explicit failure report. The classifier alone also exits 1 for known gaps or unknowns. Raw differences are recomputed, stale lists rejected, and no production allowance is added.
 
 ## Current repairs, separately from original membership
 

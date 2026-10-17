@@ -124,4 +124,4 @@ trace、bundle），可直接肉眼检查。
 
 执行 PASS 要求双方场景有效且没有未允许差异；当前初始差分会如实报告 FAIL（包括注册集和事件结构差异），不能把场景断言通过等同于契约一致。完整 shipped base/web profile 家族与最小 mock fixture 分开统计；compact、side 和其他未运行家族显式无场景。此验证不证明 rewind、文件回滚或记忆能力。命令、退出码、归一化/允许项精度、扩展和升级流程见 [CONTRACT-DIFFS.md](docs/CONTRACT-DIFFS.md)，覆盖边界见 [CONTRACT-MATRIX.md](docs/CONTRACT-MATRIX.md)。
 
-当前可操作门禁：`pnpm verify:contracts` 只双跑一次三组场景，随后分类并生成 `.agent-work/tmp/contract-classification/report/index.html`，同时可浏览原始289历史成员。退出0要求实际场景有效且无已知/未知语义缺口；raw matrix FAIL 和 partial coverage 单独保留。`--strict-coverage` 在语义通过而覆盖不足时退出2；`pnpm verify:contracts:status-selftest` 检查精确预算/工具次序规则和失败出口。七类原始缺口已分别由真实 consumer 测试与 parent 浏览器验收修复，详见 [当前修复与历史证据](docs/CONTRACT-ROOT-CAUSES.md)；这不代表所有引擎能力或 profile 插件完整覆盖。
+当前可操作统计：`pnpm verify:contracts` 同时生成三组场景差分和源码能力入口清单，报告在 `.agent-work/tmp/contract-classification/report/index.html`。**总状态为 INCOMPLETE**；场景 `bridge-gap: 0` 不代表全部能力已接通。入口按已桥接、引擎默认、dsh 已有替代、未接入、当前宿主无法直接桥接、待评估分别列出；新增声明/签名或生产接缝漂移会失败。默认退出0允许已明确列出的未接入项；`--strict-integration` 对这些项退出2，`--strict-coverage` 对场景覆盖不足退出2。仅扫描能力可运行 `pnpm verify:capabilities`。详见 [能力入口统计](docs/ENGINE-ENTRYPOINTS.md)；七类原始场景缺口的修复证据仍见 [当前修复与历史证据](docs/CONTRACT-ROOT-CAUSES.md)。
