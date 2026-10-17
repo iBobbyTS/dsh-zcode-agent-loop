@@ -1,5 +1,7 @@
 # zcode-loop-prototype — 把 ZCode AgentRuntime 嵌进真实 dsh 的原型
 
+当前目标、两边能力的责任划分、完整接入任务及升级维护方案见 [完整接入计划](docs/INTEGRATION-PLAN.md)。清单与任务由 Codex 维护；本文后面的历史“原型排除项”保留现状信息，不再决定计划范围。计划中的功能尚未因文档落地而完成。
+
 本仓库把 vendored ZCode `AgentRuntime`（`vendor/zcode/` 快照 v3.15.1）作为一个
 **外部 dsh 插件**（`src/` → `dsh-plugin-zcode-loop`）装进**独立从 npm 拉取的真实
 dsh**（devDependency `@deepseek-ai/dsh`），替换其自带 `dsh-agent-loop`，不改 dsh
