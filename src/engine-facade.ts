@@ -13,6 +13,7 @@
  */
 import { AgentRuntime, SessionEventType } from "@zcode/core";
 import { createToolRegistry } from "@zcode/core";
+import type { ResumeSessionOptions } from "@zcode/core";
 import type {
   AgentRuntimeConfig,
   AgentRuntimeDeps,
@@ -25,14 +26,22 @@ import type {
   TurnResult,
 } from "@zcode/core";
 import {
+  createMessageId,
   createModelId,
   createModelProviderId,
+  createPartId,
+  createProjectId,
   createRootTraceContext,
   createSessionId,
   InMemorySessionEventStore,
 } from "@zcode/contracts";
 import type {
+  AssistantMessageInfo,
   JsonSchema,
+  MessageId,
+  MessageInfo,
+  MessagePart,
+  MessageWithParts,
   Model,
   ModelEvent,
   ModelInputMessage,
@@ -51,10 +60,16 @@ import type {
   SessionEventStorePort,
   SessionEventStoreStats,
   SessionId,
+  SessionInfo,
   SessionProjection,
+  SessionStorePort,
+  TextPart,
+  ToolPart,
   TraceContext,
   TurnId,
   Logger,
+  LogContext,
+  UserMessageInfo,
 } from "@zcode/contracts";
 
 // ------------------------------------------------------------------
@@ -64,19 +79,28 @@ import type {
 export { AgentRuntime, InMemorySessionEventStore, SessionEventType };
 export { createToolRegistry };
 export {
+  createMessageId,
   createModelId,
   createModelProviderId,
+  createPartId,
+  createProjectId,
   createRootTraceContext,
   createSessionId,
 };
 export type {
   AgentRuntimeConfig,
   AgentRuntimeDeps,
+  AssistantMessageInfo,
   ContextBuilder,
   ContextBuildResult,
   ExecuteTurnOptions,
   JsonSchema,
   Logger,
+  LogContext,
+  MessageId,
+  MessageInfo,
+  MessagePart,
+  MessageWithParts,
   Model,
   ModelEvent,
   ModelInputMessage,
@@ -90,18 +114,24 @@ export type {
   ModelUsage,
   PermissionBrokerPort,
   PermissionBrokerResult,
+  ResumeSessionOptions,
   SessionEvent,
   SessionEventSink,
   SessionEventStorePort,
   SessionEventStoreStats,
   SessionId,
+  SessionInfo,
   SessionProjection,
+  SessionStorePort,
+  TextPart,
   ToolEntry,
   ToolExecutionContext,
+  ToolPart,
   ToolRegistry,
   TraceContext,
   TurnId,
   TurnResult,
+  UserMessageInfo,
 };
 
 /** 引擎期望的模型工厂；S02 的 model-bridge 以它为接缝。 */

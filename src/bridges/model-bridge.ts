@@ -11,6 +11,13 @@
  * `DshModelError`（保留 dsh `LlmFailure.code` 为 `providerCode`）→ 引擎走自身
  * fallback / 取消判定，桥不重试、不吞错。
  *
+ * 换模型/换档（阶段 4）：selection 由引擎按 turn 供给——每 turn `createTurnModel`
+ * 以当前 session selection 调 factory，factory 取值 **selection 优先**
+ * （`options.provider/model` 只是缺省回落，不再覆盖 selection）；`resolved` 元数据
+ * （contextWindow/maxOutputTokens/reasoning 档位/midSystem 声明）经
+ * `refresh({ resolved })` 热更新（外壳监听 dsh `model/selection` 时调用），对下一次
+ * factory 调用生效，已创建的 Model 不回溯。
+ *
  * 不变量：桥只翻译流；不缓存、不落盘、不做路由决策（provider/model 路由属于 dsh llm）。
  */
 import type { Context } from "@deepseek-ai/cordis";
@@ -74,9 +81,9 @@ export class DshModelError extends Error {
 export interface DshModelBridgeOptions {
   /** 已挂载 LlmRuntime（`ctx.plugin(LlmRuntime)` + `registerAdapter`）的 Cordis context。 */
   ctx: Context;
-  /** dsh provider 路由（必须已注册 adapter）；缺省用引擎 selection.providerId。 */
+  /** dsh provider 路由（必须已注册 adapter）；阶段 4 起 selection 优先，本字段只是 selection 缺项时的回落。 */
   provider?: string;
-  /** dsh model id；缺省用引擎 selection.modelId。 */
+  /** dsh model id；阶段 4 起 selection 优先，本字段只是 selection 缺项时的回落。 */
   model?: string;
   /**
    * 装配期 `ctx.llm.resolveModelInfo(provider, model)` 的结果（dsh 路由真实元数据）。
@@ -91,6 +98,15 @@ export interface DshModelBridgeOptions {
 
 const DEFAULT_CONTEXT_WINDOW = 200_000;
 const DEFAULT_MAX_OUTPUT_TOKENS = 32_000;
+
+/**
+ * {@link createDshModelBridge} 返回的 factory 面：热刷新 resolved 元数据（阶段 4）。
+ * `refresh` 用新的 dsh 路由元数据整体重算 Model 声明（properties/optionSpecs），
+ * 对下一次 factory 调用生效；已创建的 Model 不回溯（引擎每 turn 重建 Model）。
+ */
+export type RefreshableModelFactory = RuntimeModelFactory & {
+  refresh(next: { resolved?: LlmResolvedModelInfo }): void;
+};
 
 /**
  * 图片数据通路尚未落地：消息翻译只投影文本（`blockToText` 丢弃 image 块），
@@ -117,6 +133,38 @@ function bridgeModelProperties(contextWindow: number, resolved?: LlmResolvedMode
     supportsJsonSchemaOutput: false,
     supportsNativeWebSearch: false,
     supportsMidConversationSystem: resolved?.systemPromptUpdate === "in-history",
+  };
+}
+
+/** factory 闭包持有的 Model 声明快照；`refresh()` 整体重算替换（阶段 4 热更新）。 */
+interface BridgeModelDeclaration {
+  maxOutputTokensCap: number;
+  properties: ModelProperties;
+  effectiveReasoningValues: string[];
+}
+
+/**
+ * 由 dsh 路由元数据计算 Model 声明：显式 config 字段（装配期固定）优先于 resolved，
+ * resolved 缺席回落硬编码默认；reasoning 档位目录来自 resolved.reasoning.efforts。
+ */
+function bridgeModelDeclaration(
+  resolved: LlmResolvedModelInfo | undefined,
+  overrides: { contextWindow?: number; maxOutputTokens?: number },
+): BridgeModelDeclaration {
+  const contextWindow =
+    overrides.contextWindow ?? resolved?.context?.contextWindow ?? DEFAULT_CONTEXT_WINDOW;
+  const maxOutputTokensCap =
+    overrides.maxOutputTokens ?? resolved?.defaultMaxTokens ?? DEFAULT_MAX_OUTPUT_TOKENS;
+  const reasoningValues = resolved?.reasoning?.efforts
+    ?.map((effort) => effort.id)
+    .filter((id) => id.length > 0);
+  // schema 要求档位非空且不重复；dsh 目录缺席时回落单档 "disabled"（不选即不发 effort）。
+  const effectiveReasoningValues =
+    reasoningValues !== undefined && reasoningValues.length > 0 ? [...new Set(reasoningValues)] : ["disabled"];
+  return {
+    maxOutputTokensCap,
+    properties: bridgeModelProperties(contextWindow, resolved),
+    effectiveReasoningValues,
   };
 }
 
@@ -328,26 +376,21 @@ function translateChunk(chunk: StreamChunk, state: StreamTranslateState, out: Mo
 // ------------------------------------------------------------------
 
 /**
- * 构造经 dsh llm 路由的 `RuntimeModelFactory`。
+ * 构造经 dsh llm 路由的 `RuntimeModelFactory`（带 `refresh` 热刷新面，阶段 4）。
  * 每次 `streamText` 都现场 `prepareCall`（adapter 注册捕获在 prepared call 内），
  * `prepared.stream` 恰好分发一次；桥不做任何缓存或路由决策。
  */
-export function createDshModelBridge(options: DshModelBridgeOptions): RuntimeModelFactory {
-  const contextWindow =
-    options.contextWindow ?? options.resolved?.context?.contextWindow ?? DEFAULT_CONTEXT_WINDOW;
-  const maxOutputTokensCap =
-    options.maxOutputTokens ?? options.resolved?.defaultMaxTokens ?? DEFAULT_MAX_OUTPUT_TOKENS;
-  const properties = bridgeModelProperties(contextWindow, options.resolved);
-  const reasoningValues = options.resolved?.reasoning?.efforts
-    ?.map((effort) => effort.id)
-    .filter((id) => id.length > 0);
-  // schema 要求档位非空且不重复；dsh 目录缺席时回落单档 "disabled"（不选即不发 effort）。
-  const effectiveReasoningValues =
-    reasoningValues !== undefined && reasoningValues.length > 0 ? [...new Set(reasoningValues)] : ["disabled"];
+export function createDshModelBridge(options: DshModelBridgeOptions): RefreshableModelFactory {
+  // resolved 元数据快照：refresh() 时整体重算替换，factory 每次调用读 current。
+  let current = bridgeModelDeclaration(options.resolved, options);
 
-  return (input): Model => {
-    const provider = options.provider ?? input.selection.providerId;
-    const modelId = options.model ?? input.selection.modelId;
+  const factory: RuntimeModelFactory = (input): Model => {
+    // selection 优先（阶段 4）：引擎每 turn 以当前 session selection 调 factory，
+    // 换模型/换档随新 selection 生效；options.provider/model 只在 selection 缺项时
+    // 回落（引擎 schema 保证 selection 两字段 trim().min(1)，末位回落只是类型闭环
+    // + 对异常输入的防御）。
+    const provider = input.selection.providerId || options.provider || input.selection.providerId;
+    const modelId = input.selection.modelId || options.model || input.selection.modelId;
     const baseOptions: ModelOptions = { ...input.selection.options };
 
     const createModel = (currentOptions: ModelOptions): Model => {
@@ -413,14 +456,14 @@ export function createDshModelBridge(options: DshModelBridgeOptions): RuntimeMod
         providerId: createModelProviderId(provider),
         modelId: createModelId(modelId),
         displayName: `dsh:${provider}/${modelId}`,
-        properties,
+        properties: current.properties,
         optionSpecs: {
           reasoningLevel: {
-            values: effectiveReasoningValues,
+            values: current.effectiveReasoningValues,
             map: "{'reasoning_effort': reasoningLevel}",
           },
           maxOutputTokens: {
-            max: maxOutputTokensCap,
+            max: current.maxOutputTokensCap,
             map: "{'max_output_tokens': maxOutputTokens}",
           },
         },
@@ -480,6 +523,13 @@ export function createDshModelBridge(options: DshModelBridgeOptions): RuntimeMod
 
     return createModel(baseOptions);
   };
+
+  // 热刷新面（阶段 4）：外壳监听 dsh model/selection 时以新 resolved 重算声明。
+  return Object.assign(factory, {
+    refresh(next: { resolved?: LlmResolvedModelInfo }): void {
+      current = bridgeModelDeclaration(next.resolved, options);
+    },
+  });
 }
 
 /**

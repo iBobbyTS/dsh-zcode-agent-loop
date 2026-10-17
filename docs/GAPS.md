@@ -7,6 +7,11 @@
 模型元数据（`LlmResolvedModelInfo`，经 `ctx.llm.resolveModelInfo(provider, model)` 按路由解析）
 之间的映射现状：哪些已打通、哪些不支持及原因。断言见 `scripts/s02-integration.ts` AC5。
 
+2026-10-17 补充：会话内换模型（阶段 4）起，上述取值在**每次 `model/selection` 事件**后
+经 `createDshModelBridge(...).refresh({resolved})` 热更新（声明快照整体重算，对下一次
+factory 调用生效）；路由本身由引擎按 turn 的 session selection 供给（selection 优先于
+构造期 options）。
+
 ## 取值链（已实现）
 
 引擎面每个字段按 **插件显式 config > dsh `resolveModelInfo` 真实元数据 > 硬编码默认** 三级取值：

@@ -15,7 +15,7 @@ UI 永远看不到**」的契约清单。
 | 分类 | 数量 | 含义 |
 |---|---|---|
 | 已翻译 | 9 | 事件桥有 case，落为合法 dsh 事件 |
-| **会发出·被丢** | 8 | 当前引擎配置下**真实发出**、桥按未知类型丢弃——有感知损失的集合 |
+| **会发出·被丢** | 8 | 当前引擎配置下**真实发出**、桥按未知类型丢弃——有感知损失的集合（2026-10-17 起 compact 3 类 + anomaly 为「日志镜像 + drop」，压缩 sidecar `model_*` 另有门控 drop，见第二节） |
 | 门控·不产生 | 46 | 对应子系统/端口未启用，事件根本不会发出 |
 | core 无发射点 | 21 | core 内无发射引用（宿主/协议层注入或遗留类型），本插件路径不可能出现 |
 | 合计 | **84** | contracts `SessionEventType` 全集 |
@@ -38,37 +38,48 @@ UI 永远看不到**」的契约清单。
 | `turn_error` | 同上错误路径 | → `turn/end`{error} |
 
 缓冲不是丢失：是 v4 关系校验要求的翻译排序（assistant 必须先于其 tool 结果进入
-surface）。`model_streaming` 当前收不到数据（引擎非流式，见 CAPABILITIES.md §1），
-但翻译逻辑已实现——开流式后立即生效。
+surface）。`model_streaming` 阶段 1 起常态活跃（`modelStreaming:"on"`）：除折进
+`assistant/message.stream` 外，有 publisher 时逐 chunk 发 live `agent/assistant-stream`
+frame（start/chunk/end，attemptId/revision 语义照抄 stock `AssistantStreamAttempt`）。
 
-## 二、会发出·被丢（现实缺口，8 种）
+## 二、会发出·被丢（现实缺口，8 种 + 压缩 sidecar）
+
+> 2026-10-17 阶段 5 更新：compact 3 类与 model_anomaly_warning 已改为**logger 镜像 +
+> drop 计数**（容器日志与 dropStats 双可见）；新增**压缩门**——`compact_started` 与
+> `compact_completed/failed` 之间的 `model_request` / `model_complete` /
+> `model_streaming` 是摘要 sidecar 请求，事件桥直接 drop（不翻译），否则摘要文本会被
+> 落成 `assistant/message` 污染 surface（实测发现，样本 seq 结构
+> turn/start→user→[摘要]→[真回复]）。Compact 族**不做落盘翻译**：dsh `compaction/*`
+> 是驱动 surface 修剪的事务族（compaction-basic 的 compactSurfaceRegion），手工构造
+> 错序会损坏 session log；引擎 auto-compact 的 dsh 等价物由 dsh-compaction-* 承担。
 
 | 引擎事件 | 发射时机 | 载荷要点 | 丢失影响 | 处置 |
 |---|---|---|---|---|
 | `tool_call_started` | **每次工具执行**（`core/src/tool/executor/events.ts`） | 按执行入参解析后的副作用旗标（Bash 只读判定等） | 基本无害：旗标只服务引擎权限面（已直通）；dsh 无对应概念 | 可不接 |
 | `tool_batch_complete` | **每个工具批**（`core/src/runtime/methods/tools.ts:107`） | 批内成功/失败计数 | 无害：dsh 无批概念 | 可不接 |
-| `compact_started` / `compact_completed` / `compact_failed` | auto-compact 触发时（**缺省开启**） | 压缩请求/摘要结果 | **有感知损失**：dsh 日志与 UI 看不到压缩边界，回放把压缩前历史当全量 | **建议接入**（CAPABILITIES.md 接入顺序第 5 项） |
-| `compact_boundary` | 压缩边界落定 | 边界消息 id | 同上 | 同上 |
-| `microcompact_boundary` | 工具结果微压缩（`methods/microcompact.ts`） | 微压缩边界 | 同上（工具结果大时触发） | 同上 |
-| `model_anomaly_warning` | 异常流检测（`methods/turn-tool-warnings.ts`） | 异常证据 | 诊断信息丢失（异常仍会体现为 turn_error） | 随 logger 接通一起评估 |
+| `compact_started` / `compact_completed` / `compact_failed` | auto-compact 触发时（**缺省开启**；阶段 5 用 `contextWindow: 3000` 实测真实触发） | 压缩请求/摘要结果/边界 id | UI 无压缩边界感知（日志已可见）；回放把压缩前历史当全量 | **已镜像**（warn 日志 + drop；不落盘的理由见上） |
+| `compact_boundary` | 压缩边界落定 | 边界消息 id | 同上 | drop 计数（不镜像） |
+| `microcompact_boundary` | 工具结果微压缩（`methods/microcompact.ts`） | 微压缩边界 | 同上（工具结果大时触发） | drop 计数（不镜像） |
+| `model_anomaly_warning` | 异常流检测（`methods/turn-tool-warnings.ts`） | 异常证据 | 诊断信息丢失（异常仍会体现为 turn_error） | **已镜像**（warn 日志 + drop） |
+| （压缩门）`model_request` / `model_complete` / `model_streaming` | 压缩摘要 sidecar（`querySource:"compact"`） | 摘要请求/流/结果 | 无丢失——不属主 turn；翻译反而污染 surface | **门控 drop**（阶段 5） |
 
 ## 三、门控·不产生（46 种，按族）
 
 | 族 | 类型 | 不产生的原因（对应 CAPABILITIES.md 章节） |
 |---|---|---|
-| 转向/队列（11） | `turn_steer_queued` / `_delivery_changed` / `_dispatch_changed` / `_drained` / `_rejected` / `_discarded` / `_reordered`、`session_input_promoted`、`queue_auto_drain_changed`、`followup_mode_changed`、`session_mode_changed` | 插件不走引擎转向/队列 API（§2） |
+| 转向/队列（11） | `turn_steer_queued` / `_delivery_changed` / `_dispatch_changed` / `_drained` / `_rejected` / `_discarded` / `_reordered`、`session_input_promoted`、`queue_auto_drain_changed`、`followup_mode_changed`、`session_mode_changed` | 阶段 6 起 busy steering 走引擎 `steerTurn`，`turn_stear_queued`/`_dispatch_changed` 等**会真实发出**（drop 计数，dropStats 可见）；`_rejected` 仅空闲竞态时发出；其余队列 API 未用（§2） |
 | 权限（3） | `permission_requested` / `_resolved` / `_denied` | 工具 `needsApproval:false`，引擎永不发起权限交互（§4） |
 | 后台任务（3） | `background_task_started` / `_updated` / `_completed` | `runtimeTaskRegistry` 缺席（§9） |
 | 子代理（3） | `subagent_spawned` / `subagent_message` / `subagent_stopped` | 子代理子系统未接（§6） |
 | 动态工作流（1） | `dynamic_workflow_run_progress` | 显式关闭（§7） |
 | workspace hooks（4） | `hook_run_started` / `_completed` / `_failed` / `_blocked` | `hookRunner` 缺席（§11） |
-| 流式（8） | `streaming_tool_ledger_updated`、`stream_recovery_`×6、`tool_call_progress` | `modelStreaming` 未开（§1）；progress 另需 MCP/进度上报方 |
+| 流式（8） | `streaming_tool_ledger_updated`、`stream_recovery_`×6、`tool_call_progress` | `modelStreaming` 已开（阶段 1）但 recovery 族仅在断流/重试时发出（实测连接稳定未出现，发出即 drop 计数）；ledger 需流中工具调度；progress 另需 MCP/进度上报方 |
 | 回溯/检查点/fork（3） | `rewind_triggered`、`checkpoint_created`、`session_forked` | rewind/checkpoint/fork 未接（§8） |
 | 目标环（2） | `target_changed`、`target_completion_verification` | 目标延续环未用（§14 归边缘） |
-| 换模型/回退（2） | `model_selected`、`turn_execution_model_fallback` | 运行期换模型未接（§1） |
+| 换模型/回退（2） | `model_selected`、`turn_execution_model_fallback` | `model_selected` 仅引擎 submission 执行态路径发射（§1 的 setSessionModelSelection 不触发）；fallback 仅执行档回退时发（发出即 drop 计数） |
 | 标题（1） | `session_title_updated` | 引擎标题生成未接，dsh session-title-llm 承担（§14） |
 | 网络状态（2） | `model_network_status`、`network_request_status` | 桥接 Model 不上报网络状态（model-status sink 未消费） |
-| 会话生命周期（2） | `session_created`、`session_resumed` | 仅 `resumeFromStore` 路径发射（`methods/resume.ts`），本插件不调（§8） |
+| 会话生命周期（1) | `session_created` | 仅引擎自建会话路径发射，本插件不触发（§8）。（`session_resumed` 阶段 3 起随 resume 真实发出——drop 计数，实测 dropStats 可见） |
 | 交互自解析（1） | `user_input_auto_resolution_updated` | 交互自解析未接（§2 边缘） |
 
 ## 四、core 无发射点（21 种）
@@ -89,11 +100,11 @@ surface）。`model_streaming` 当前收不到数据（引擎非流式，见 CAP
 `model_request`/`model_complete` 时**自行合成** dsh 的 `user/message`/
 `assistant/message`——引擎不产这两个事件，落盘不缺。）
 
-## 建议
+## 建议（2026-10-17 更新：均已落地）
 
-1. `dropStats()` 目前只在内存（诊断需打点）。**随 logger 接通（CAPABILITIES.md 接入
-   顺序第 2 项）把 dropStats 周期性/终局打到 dsh 日志面**，让本表的静态分类获得
-   实测校验。
-2. 真正值得补译的只有 Compact 族 5 种 + `model_anomaly_warning`（共 6 种）；其余
-   「会发出·被丢」两类（tool_call_started/tool_batch_complete）无 dsh 对应概念，
-   维持丢弃并保留 dropStats 计数即可。
+1. ~~dropStats 打点~~：已随阶段 2 logger 接通——agent drain 每 turn 终局打
+   `event-bridge drop stats`（dropped>0 时），本表静态分类已获实测校验（如
+   `session_resumed`、compact 族、sidecar `model_*` 的 drop 明细均在容器日志出现）。
+2. ~~Compact 族 + anomaly 补译~~：阶段 5 改判——**不做落盘翻译**（dsh `compaction/*`
+   是 surface 修剪事务族，手工构造有损坏 session log 风险），改为 warn 日志镜像 +
+   压缩门（见第二节更新）；tool_call_started/tool_batch_complete 维持 drop 计数。

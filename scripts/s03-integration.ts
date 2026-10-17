@@ -30,7 +30,7 @@ import SessionStore, { SessionId as DshSessionId } from "@deepseek-ai/dsh-sessio
 import SystemPrompt from "@deepseek-ai/dsh-system-prompt";
 import ToolRuntime, { defineTool } from "@deepseek-ai/dsh-tools";
 
-import ZcodeLoop, { PrototypeUnsupportedError } from "../src/index.js";
+import ZcodeLoop from "../src/index.js";
 
 // ------------------------------------------------------------------
 // fake llm adapter（照抄 S02 / reference mock-adapter 写法）
@@ -267,19 +267,19 @@ async function main(): Promise<void> {
   assert(inboxSplices.length >= 2, `inbox splices must be durable (>=2: insert + claim), got ${String(inboxSplices.length)}`);
   console.log(`[s03] inbox splices durable: ${String(inboxSplices.length)}`);
 
-  // ---- 附加 probe：resume 抛 PROTOTYPE_UNSUPPORTED ----
+  // ---- 附加 probe：resume 走真实冷恢复路径（本测试 ctx 无 persistence，按 stock
+  // 文案拒绝；阶段 3 起 resume 不再是 PROTOTYPE_UNSUPPORTED）----
   let resumeError: unknown;
   try {
     await ctx.agents.resume({ resumeSessionId: sessionId });
   } catch (error: unknown) {
     resumeError = error;
   }
-  assert(resumeError instanceof PrototypeUnsupportedError, `resume must throw PrototypeUnsupportedError, got ${String(resumeError)}`);
   assert(
-    (resumeError as PrototypeUnsupportedError).code === "PROTOTYPE_UNSUPPORTED",
-    "resume error must carry code PROTOTYPE_UNSUPPORTED",
+    resumeError instanceof Error && resumeError.message.includes("session persistence is not configured"),
+    `resume without persistence must fail with stock wording, got ${String(resumeError)}`,
   );
-  console.log("[s03] resume probe: PROTOTYPE_UNSUPPORTED surfaced");
+  console.log("[s03] resume probe: persistence guard surfaced");
 
   await handle.dispose();
   console.log("[s03] PASS: AC2/AC3 + pipeline/system-prompt/inbox/resume probes all green");

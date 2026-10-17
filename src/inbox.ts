@@ -7,12 +7,14 @@
  * - 持久性：与 stock 相同以 `agent/inbox/spliced` SessionEvent 为唯一真相
  *   （`Session.append`），本类内存态只是**自己写下的 splice 的折叠**——原型里
  *   本 agent 是该 session inbox 的唯一写者，不挂 projection registry。
- * - 语义裁剪（v0）：只实现 next-turn 语义。`next-step` 列表保持存在（接口
- *   要求）但外壳不消费它；`claim('next-turn')` 取 next-step 批 + 一条
- *   next-turn 消息（与 stock 对齐：一条 followup 独占一个 turn）。
- * - 事件：不重发 stock 的 agent/inbox/* live 事件（那是 AgentEventDispatch 的
- *   面，外壳只在 agent/status 与 agent/error 上发声）——原型裁剪，落盘事件
- *   完整保留。
+ * - 语义：双 target 都按 stock splice/claim 语义实现（阶段 6 起 agent 消费
+ *   next-step：busy steering 走 agent 的 steerActive append+claim；空闲 inject
+ *   的 next-step 由 drain 的 `claim('next-turn')` 拼接消费——一条 followup
+ *   独占一个 turn）。
+ * - 事件：落盘不变；stock 的 agent/inbox/* live 词表（inserted/claimed/
+ *   discarded）经构造期注入的 `emitLive` 回调补齐（阶段 6，UI 队列气泡实时
+ *   显示；emit 只传实际 payload，agent 字段由 Scoped dispatch 收窄）——回调
+ *   缺席时静默跳过（S03 脚本等无派发面的路径）。
  */
 import type { ContentBlock, MessageId, UserMessage } from "@deepseek-ai/dsh-llm";
 import type { Inbox, InboxState, InboxTarget } from "@deepseek-ai/dsh-agent";
@@ -26,10 +28,23 @@ export function userMessageText(message: UserMessage): string {
     .join("\n");
 }
 
+/** inbox live 事件词表（stock 同款；emit 只传实际 payload，无 agent 字段）。 */
+export type InboxLiveEvent =
+  | "agent/inbox/inserted"
+  | "agent/inbox/claimed"
+  | "agent/inbox/discarded";
+
 export class ZcodeLoopInbox implements Inbox {
   private state: InboxState = { "next-turn": [], "next-step": [] };
 
-  constructor(private readonly session: DshSession) {}
+  constructor(
+    private readonly session: DshSession,
+    /**
+     * 阶段 6：live 事件出口（agent 构造时转发进 dsh AgentEventDispatch）。
+     * claimed 的 `turn` 是拥有该批的 turn 号；inserted/discarded 无 turn 语义。
+     */
+    private readonly emitLive?: (event: InboxLiveEvent, payload: { message: UserMessage; turn?: number }) => void,
+  ) {}
 
   get nextTurn(): readonly UserMessage[] {
     return this.state["next-turn"];
@@ -53,10 +68,10 @@ export class ZcodeLoopInbox implements Inbox {
    * 取走一个 turn 的批：全部 next-step + 一条 next-turn（stock claim 语义）。
    * 取走也落 splice（不带 canceled outcome——被消费不是被取消）。
    */
-  claim(target: InboxTarget, _turn: number): UserMessage[] {
-    const claimed = this.apply("next-step", 0, this.state["next-step"].length, [], false);
+  claim(target: InboxTarget, turn: number): UserMessage[] {
+    const claimed = this.apply("next-step", 0, this.state["next-step"].length, [], false, turn);
     if (target === "next-turn") {
-      claimed.push(...this.apply("next-turn", 0, 1, [], false));
+      claimed.push(...this.apply("next-turn", 0, 1, [], false, turn));
     }
     return claimed;
   }
@@ -89,7 +104,8 @@ export class ZcodeLoopInbox implements Inbox {
     deleteCount: number,
     inserted: UserMessage[],
   ): UserMessage[] {
-    return this.apply(target, start, deleteCount, inserted, true);
+    // splice 路径不产生 claimed 事件（discardRemoved=true → 全走 discarded），turn 恒 0。
+    return this.apply(target, start, deleteCount, inserted, true, 0);
   }
 
   private locate(messageId: MessageId): { target: InboxTarget; index: number } | undefined {
@@ -100,13 +116,20 @@ export class ZcodeLoopInbox implements Inbox {
     return undefined;
   }
 
-  /** 归一化 splice → 内存折叠 + `agent/inbox/spliced` 落盘（唯一真相）。 */
+  /**
+   * 归一化 splice → 内存折叠 + `agent/inbox/spliced` 落盘（唯一真相）+ live 事件
+   * （阶段 6，与落盘同一次状态变更）：被移除且 discardRemoved（canceled，即
+   * clear/覆盖删除）→ discarded；被移除且非 canceled（claim 消费）→ claimed
+   * {turn}（stock 同款：claim 的 removed 批记到拥有它的 turn 上）；插入的每条 →
+   * inserted。事件序与 stock 对齐：先移除侧后插入侧。
+   */
   private apply(
     target: InboxTarget,
     start: number,
     deleteCount: number,
     inserted: UserMessage[],
     discardRemoved: boolean,
+    turn: number,
   ): UserMessage[] {
     const inbox = this.state[target];
     const truncatedStart = Math.trunc(start);
@@ -142,6 +165,12 @@ export class ZcodeLoopInbox implements Inbox {
       inserted,
       ...(outcome === undefined ? {} : { outcome }),
     });
-    return inbox.slice(actualStart, actualStart + actualDeleteCount);
+    const removed = inbox.slice(actualStart, actualStart + actualDeleteCount);
+    for (const message of removed) {
+      if (discardRemoved) this.emitLive?.("agent/inbox/discarded", { message });
+      else this.emitLive?.("agent/inbox/claimed", { message, turn });
+    }
+    for (const message of inserted) this.emitLive?.("agent/inbox/inserted", { message });
+    return removed;
   }
 }

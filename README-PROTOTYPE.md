@@ -86,10 +86,18 @@ trace、bundle），可直接肉眼检查。
 
 ## 已知边界（原型范围）
 
-- resume/fork 不支持（`agents.resume` 抛 `PROTOTYPE_UNSUPPORTED`）；steering
-  v0 一律 next-turn；subagent 桥、compaction 桥接、spill 不做。
-- system prompt 每 agent 装配一次（构造期），非每 turn 重装配；headless persona
-  的 `{{model}}` 变量因此需要静态化（见 overlay）。
+- subagent 桥、spill 不做。
+- **steering 真语义已支持**（阶段 6）：turn 进行中发送经 `agent.steer` 内联当前轮
+  （引擎 `steerTurn` guide），空闲时安全降级排队；inbox live 事件全词表已发。
+- **resume / fork 已支持**（2026-10-17 桥接批次）：冷重启后旧会话可续聊（最小
+  `resumeFromStore`：dsh 事件逆向 + 哑 sessionStore）；fork（「在新对话中分支」）
+  的 seeded create 复用同一水合，fork 后模型可见前缀上下文。实现与验收见
+  `.agent-work/plans/` 归档与 [docs/CAPABILITIES.md](docs/CAPABILITIES.md) §2/§8。
+  同批次接入：逐字流式（live `agent/assistant-stream`）、logger（stderr 双投递 +
+  dropStats 打点）、会话内换模型/换档（`model/selection` 监听）、压缩可观测 +
+  sidecar 隔离门。
+- system prompt 每 agent 装配一次（构造期），非每 turn 重装配；`{{model}}` 变量
+  渲染于装配时点、不随会话内换模型热更；headless persona 的静态化见 overlay。
 - createAgent 错误路径若在 tool/call 未解析时结束 turn，durable log 会被严格
   读取端拒绝（stock 用 TOOL_NOT_STARTED repair 事件处理；原型接受，happy path
   已验证）。

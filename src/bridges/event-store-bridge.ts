@@ -11,10 +11,13 @@
  * - model_request           → [上一步 assistant 缓冲落定 → step/end（若 open）] + step/start
  *                               + [system/message（仅首次）] + user/message + request/header
  * - model_streaming         → 累积为该步 assistant 的紧凑流（AssistantStreamAccumulator）
+ *                               （live：有 publisher 时逐 chunk 发 agent/assistant-stream frame）
  * - model_complete          → 缓冲 assistant/message（等工具结果或下一边界落）
  * - tool_call_scheduled     → 落缓冲的 assistant/message（含 tool-call 块）+ tool/call
  * - tool_call_result/error  → tool/result（surfaceOp append，sourceEventSeqs 配对 tool/call）
  * - turn_complete/error     → 落缓冲 assistant/message + step/end（若 open）+ turn/end{reason}
+ * - compact_started/completed/failed、model_anomaly_warning → 不落盘，logger 镜像
+ *   + 丢弃计数（阶段 5：dsh compaction/* 是 surface 修剪事务族，不手工构造）
  * - 其余（流式/进度/生命周期杂项）与未知事件 → 丢弃并计数，不炸会话。
  *
  * 缓冲只是翻译排序（assistant/message 必须先于它的 tool 结果进入 surface），
@@ -32,12 +35,15 @@ import {
   createSystemMessage,
   createToolResultMessage,
   createUserMessage,
+  LlmAttemptId,
   ToolCallId,
 } from "@deepseek-ai/dsh-llm";
 import type { Session as DshSession } from "@deepseek-ai/dsh-session";
 import { SessionSeq } from "@deepseek-ai/dsh-session";
+import type { AssistantStreamFrame } from "@deepseek-ai/dsh-agent";
 
 import type {
+  LogContext,
   Logger,
   SessionEvent,
   SessionEventStorePort,
@@ -122,6 +128,9 @@ interface TurnErrorPayload {
 // ------------------------------------------------------------------
 // 桥状态与翻译
 // ------------------------------------------------------------------
+
+/** live end frame 的终局结果（stock settle/abandon 的 committed/abandoned 二态）。 */
+type AssistantStreamEndOutcome = Extract<AssistantStreamFrame, { type: "end" }>["outcome"];
 
 interface PendingToolCall {
   callId: string;
@@ -259,10 +268,8 @@ const KNOWN_ZCODE_EVENT_TYPES = new Set<string>([
 ]);
 
 
-/** 引擎 turnNumber 从 0 起，dsh durable format 要求 turn 正数（stock loop 1-based）。 */
-function dshTurn(turn: number | undefined): number {
-  return (turn ?? 0) + 1;
-}
+/** 引擎 turnNumber 从 0 起，dsh durable format 要求 turn 正数（stock loop 1-based）；
+ *  resume 会话的 turn 号经 setTurnBase 对齐偏移（见类内方法）。 */
 
 function dshFinishKindFromStopReason(stopReason: string): Extract<StreamChunk, { type: "finish" }>["reason"] {
   if (stopReason === "tool-calls" || stopReason === "tool_use" || stopReason === "tool_calls") {
@@ -344,6 +351,21 @@ export class DshSessionEventStoreBridge implements SessionEventStorePort {
   private droppedByType = new Map<string, number>();
   private unknownTypes = new Set<string>();
   private readonly now: () => number;
+  /** resume 场景的 turn 号偏移（见 setTurnBase；create 会话恒 0）。 */
+  private turnBase = 0;
+  /** 引擎 auto-compact 进行中（摘要 sidecar 请求的翻译门，见 translate）。 */
+  private compacting = false;
+
+  // live 通路状态（stock AssistantStreamAttempt 语义；无 publisher 时全部静止）。
+  /** 晚绑定：bridge 在 agent 之前创建，agent 构造后由外壳回填（index.ts）。 */
+  private streamPublisher: ((frame: AssistantStreamFrame) => void) | undefined;
+  /** session 内单调递增的 model attempt 计数（attemptId 后缀，stock 同款从 1 起）。 */
+  private attemptCounter = 0;
+  /** frame revision：agent 生命周期内单调递增（每 frame +1，stock 同款从 1 起）。 */
+  private frameRevision = 0;
+  private currentAttemptId: LlmAttemptId | undefined;
+  private frameIndex = 0;
+  private attemptLive = false;
 
   constructor(private readonly options: DshEventStoreBridgeOptions) {
     this.now = options.now ?? (() => Date.now());
@@ -352,6 +374,29 @@ export class DshSessionEventStoreBridge implements SessionEventStorePort {
   /** dsh session（唯一落盘真相）。 */
   get session(): DshSession {
     return this.options.session;
+  }
+
+  /**
+   * resume 会话的 turn 号对齐：引擎恢复后 turnNumber 从「历史用户消息数」起，
+   * 而 dsh seed 的已有 turn 数可能更多（失败 turn 未必落过 user/message——引擎
+   * 在 model_request 前的持久化点就会抛）。base = seed 最大 turn 号 − 引擎历史
+   * 用户消息数，让新 turn 落在已有最大 turn 之后，避免重复 turn 号。
+   */
+  setTurnBase(base: number): void {
+    this.turnBase = Math.max(0, Math.trunc(base));
+  }
+
+  /** 引擎 turnNumber（0 起）→ dsh turn 号（1 起，含 resume 偏移）。 */
+  private dshTurn(turn: number | undefined): number {
+    return this.turnBase + (turn ?? 0) + 1;
+  }
+
+  /**
+   * 晚绑定 live frame publisher（agent 的 dsh AgentEventDispatch 面）。缺席时桥
+   * 只累积落盘、不发任何 frame（S02/S03 直用 bridge 的装配保持原行为）。
+   */
+  setStreamPublisher(publish: (frame: AssistantStreamFrame) => void): void {
+    this.streamPublisher = publish;
   }
 
   /** 翻译统计快照（AC：丢弃可见、会话不炸）。 */
@@ -437,6 +482,16 @@ export class DshSessionEventStoreBridge implements SessionEventStorePort {
       this.drop(event, "session id mismatch");
       return;
     }
+    // 压缩摘要 sidecar 请求（model_*）不进翻译表（compact 门，见 switch 内注释）。
+    if (
+      this.compacting
+      && (event.type === "model_request"
+        || event.type === "model_complete"
+        || event.type === "model_streaming")
+    ) {
+      this.drop(event, "compact sidecar model request");
+      return;
+    }
     switch (event.type) {
       case "turn_started": {
         this.translateTurnStarted(event.payload as TurnStartedPayload);
@@ -483,6 +538,29 @@ export class DshSessionEventStoreBridge implements SessionEventStorePort {
         this.translatedCount += 1;
         return;
       }
+      case "compact_started":
+      case "compact_completed":
+      case "compact_failed":
+      case "model_anomaly_warning": {
+        // 阶段 5：压缩/异常事件不落盘（dsh compaction/* 是驱动 surface 修剪的
+        // 事务族，手工构造错序会损坏 session log；引擎 auto-compact 的 dsh 等价
+        // 物由 dsh-compaction-* 承担），但经 logger 镜像——压缩真发生时容器
+        // 日志与 dropStats 同时可见（PROJECTION.md 的实测校验建议）。
+        // 压缩门（compacting）：compact_started 到 completed/failed 之间的
+        // model_request/complete/streaming 是摘要 sidecar 请求，不属主 turn——
+        // 翻译会把摘要文本落成 assistant/message 污染 surface（实测 seq 结构
+        // turn/start→user→[摘要]→[真回复]，见 stage5 归档）。
+        if (event.type === "compact_started") this.compacting = true;
+        else if (event.type === "compact_completed" || event.type === "compact_failed") {
+          this.compacting = false;
+        }
+        this.options.logger?.warn(
+          `engine ${event.type} (not projected)`,
+          event.payload as LogContext | undefined,
+        );
+        this.drop(event);
+        return;
+      }
       default:
         this.drop(event);
         return;
@@ -494,6 +572,9 @@ export class DshSessionEventStoreBridge implements SessionEventStorePort {
   }
 
   private resetStepStream(): void {
+    // 上个 attempt 没走到 flushPendingAssistant（如流错误后直接到边界）：先发
+    // abandoned 终局再清（endLiveAttempt 自查 attemptLive，正常路径为空操作）。
+    this.endLiveAttempt({ kind: "abandoned" });
     this.openBlock = undefined;
     this.nextBlockIndex = -1;
     this.streamAccumulator = new AssistantStreamAccumulator();
@@ -509,7 +590,7 @@ export class DshSessionEventStoreBridge implements SessionEventStorePort {
     this.pendingAssistant = undefined;
     this.toolCallSeqs = new Map();
     this.resetStepStream();
-    this.options.session.append("turn/start", { turn: dshTurn(turn) });
+    this.options.session.append("turn/start", { turn: this.dshTurn(turn) });
     // user/message 等首个 model_request 再落：system/message 必须是 surface 节点 0，
     // 而引擎在 turn_started 才给出 input、首个 model_request 才给出 system prompt。
     this.pendingUserText = payload.input;
@@ -531,10 +612,10 @@ export class DshSessionEventStoreBridge implements SessionEventStorePort {
     // S04 修复（最小改动，报告声明）：原实现 system/user 先于 step/start、step/end
     // 先于 assistant/tool 落盘，durable format 读取时全部拒绝。
     if (this.stepOpen) {
-      this.options.session.append("step/end", { turn: dshTurn(turn), step: this.step });
+      this.options.session.append("step/end", { turn: this.dshTurn(turn), step: this.step });
       this.stepOpen = false;
     }
-    this.options.session.append("step/start", { turn: dshTurn(turn), step });
+    this.options.session.append("step/start", { turn: this.dshTurn(turn), step });
     this.stepOpen = true;
     // system prompt 只在首次请求落（原型：后续变化丢弃计数，不做 in-history 归一化）。
     // S03 修复（最小改动，报告声明）：custom system prompt 路径下引擎会发**多条**前导
@@ -555,7 +636,7 @@ export class DshSessionEventStoreBridge implements SessionEventStorePort {
       if (systemText.length > 0) {
         this.options.session.append(
           "system/message",
-          { turn: dshTurn(turn), step, message: createSystemMessage(systemText) },
+          { turn: this.dshTurn(turn), step, message: createSystemMessage(systemText) },
           { surfaceOp: "append" },
         );
         this.systemMessageLogged = true;
@@ -581,6 +662,52 @@ export class DshSessionEventStoreBridge implements SessionEventStorePort {
     this.resetStepStream();
   }
 
+  /** 首个 chunk 前铸 attempt 并发 start frame（stock AssistantStreamAttempt.start 语义）。 */
+  private ensureLiveAttempt(): LlmAttemptId {
+    if (this.attemptLive && this.currentAttemptId !== undefined) return this.currentAttemptId;
+    this.attemptCounter += 1;
+    const attemptId = LlmAttemptId(`${this.options.session.id}:${this.attemptCounter}`);
+    this.currentAttemptId = attemptId;
+    this.frameIndex = 0;
+    this.attemptLive = true;
+    this.streamPublisher?.({
+      type: "start",
+      attemptId,
+      revision: ++this.frameRevision,
+      turn: this.dshTurn(this.turn),
+      step: this.step,
+    });
+    return attemptId;
+  }
+
+  /** 每个 StreamChunk 一条 chunk frame（index 稠密递增，time 与 durable 记录同值）。 */
+  private emitLiveChunk(chunk: StreamChunk, time: number): void {
+    if (this.streamPublisher === undefined) return;
+    this.streamPublisher({
+      type: "chunk",
+      attemptId: this.ensureLiveAttempt(),
+      revision: ++this.frameRevision,
+      index: this.frameIndex++,
+      time,
+      chunk,
+    });
+  }
+
+  /** attempt 终局：仅当 attempt 在场。发完即清，revision 继续单调。 */
+  private endLiveAttempt(outcome: AssistantStreamEndOutcome): void {
+    const publisher = this.streamPublisher;
+    if (!this.attemptLive || publisher === undefined || this.currentAttemptId === undefined) return;
+    publisher({
+      type: "end",
+      attemptId: this.currentAttemptId,
+      revision: ++this.frameRevision,
+      index: this.frameIndex,
+      outcome,
+    });
+    this.attemptLive = false;
+    this.currentAttemptId = undefined;
+  }
+
   /** 把 ModelStreaming 事件累积成 dsh 紧凑流（assistant/message 的 `stream` 字段）。 */
   private accumulateStreaming(payload: ModelStreamingPayload): void {
     const accumulator = this.streamAccumulator;
@@ -588,6 +715,8 @@ export class DshSessionEventStoreBridge implements SessionEventStorePort {
     const time = this.now();
     const push = (chunk: StreamChunk): void => {
       accumulator.push({ time, chunk });
+      // live 与 durable 喂同一条 chunk、同一个 time（stock push 语义）。
+      this.emitLiveChunk(chunk, time);
     };
     switch (payload.kind) {
       case undefined:
@@ -807,10 +936,10 @@ export class DshSessionEventStoreBridge implements SessionEventStorePort {
       outputTokens: usage?.outputTokens ?? 0,
       ...(usage?.totalTokens === undefined ? {} : { totalTokens: usage.totalTokens }),
     };
-    this.options.session.append(
+    const appended = this.options.session.append(
       "assistant/message",
       {
-        turn: dshTurn(assistant.turn),
+        turn: this.dshTurn(assistant.turn),
         step: assistant.step,
         message: createAssistantMessage({ content, source }),
         stream,
@@ -818,6 +947,12 @@ export class DshSessionEventStoreBridge implements SessionEventStorePort {
       },
       { surfaceOp: "append" },
     );
+    // live 终局在 durable 落盘之后（stock settle 语义）：end frame 带 committed seq。
+    this.endLiveAttempt({
+      kind: "committed",
+      eventType: "assistant/message",
+      seq: appended.seq,
+    });
     this.pendingAssistant = undefined;
     this.streamFinished = false;
   }
@@ -833,7 +968,7 @@ export class DshSessionEventStoreBridge implements SessionEventStorePort {
     // assistant/message（含至今的 tool-call 块）先于首个 tool/call 落进 surface。
     this.flushPendingAssistant(toolCall);
     const event = this.options.session.append("tool/call", {
-      turn: dshTurn(turn),
+      turn: this.dshTurn(turn),
       step: this.step,
       callId: ToolCallId(payload.toolCallId),
       name: payload.toolName,
@@ -850,7 +985,7 @@ export class DshSessionEventStoreBridge implements SessionEventStorePort {
     this.options.session.append(
       "tool/result",
       {
-        turn: dshTurn(turn),
+        turn: this.dshTurn(turn),
         step: this.step,
         message: createToolResultMessage({
           callId: ToolCallId(payload.toolCallId),
@@ -870,7 +1005,7 @@ export class DshSessionEventStoreBridge implements SessionEventStorePort {
     this.options.session.append(
       "tool/result",
       {
-        turn: dshTurn(turn),
+        turn: this.dshTurn(turn),
         step: this.step,
         message: createToolResultMessage({
           callId: ToolCallId(payload.toolCallId),
@@ -893,10 +1028,10 @@ export class DshSessionEventStoreBridge implements SessionEventStorePort {
     this.flushPendingAssistant();
     // v4 关系校验：turn/end 前不允许 open step（消息类事件已在其内落定）。
     if (this.stepOpen) {
-      this.options.session.append("step/end", { turn: dshTurn(turn), step: this.step });
+      this.options.session.append("step/end", { turn: this.dshTurn(turn), step: this.step });
       this.stepOpen = false;
     }
-    this.options.session.append("turn/end", { turn: dshTurn(turn), reason: { kind: "completed" } });
+    this.options.session.append("turn/end", { turn: this.dshTurn(turn), reason: { kind: "completed" } });
   }
 
   private translateTurnError(payload: TurnErrorPayload): void {
@@ -906,11 +1041,11 @@ export class DshSessionEventStoreBridge implements SessionEventStorePort {
     // v4 关系校验：turn/end 前不允许 open step。（错误路径若还有未解析的
     // tool/call，durable 读取会拒绝——原型接受，见 S04 报告缺口。）
     if (this.stepOpen) {
-      this.options.session.append("step/end", { turn: dshTurn(turn), step: this.step });
+      this.options.session.append("step/end", { turn: this.dshTurn(turn), step: this.step });
       this.stepOpen = false;
     }
     this.options.session.append("turn/end", {
-      turn: dshTurn(turn),
+      turn: this.dshTurn(turn),
       reason: {
         kind: "error",
         error: {
