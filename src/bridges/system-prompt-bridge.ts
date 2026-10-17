@@ -1,5 +1,5 @@
 /**
- * system-prompt-bridge — S03 的 dsh system prompt 注入。
+ * system-prompt-bridge — dsh system prompt 注入。
  *
  * 任务合同要求"contextBuilder 用最小实现把 dsh `SystemPrompt.assemble()` 结果
  * 注入 system 消息"。现场实测（vendored `runtime/methods/turn.ts` +

@@ -1,5 +1,5 @@
 /**
- * model-bridge — 共享边界样例 1（模型流）的 S02 实现。
+ * model-bridge — 模型流桥（共享边界样例 1 的实现）。
  *
  * ZCode `RuntimeModelFactory` 的 dsh 实现：`Model.streamText(request)` 内部走
  * dsh `ctx.llm.prepareCall(...) + prepared.stream(request)`，把 dsh

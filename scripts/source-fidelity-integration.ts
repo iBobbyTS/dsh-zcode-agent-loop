@@ -1,7 +1,7 @@
 /**
- * S05 集成自证脚本（阶段 8a：user/message source 投影保真 + 压缩门回归护栏）：
+ * source 保真集成自证脚本（阶段 8a：user/message source 投影保真 + 压缩门回归护栏）：
  *
- * 装配与 s03 同款（fake llm adapter + **不装** stock agent-loop；本脚本无工具
+ * 装配与 pipeline 脚本同款（fake llm adapter + **不装** stock agent-loop；本脚本无工具
  * AC，不注册 dsh 工具，仅挂 ToolRuntime 服务）；慢速 adapter（25ms/字符）给
  * steering 留注入窗口（steer-probe 先例）。
  *
@@ -87,11 +87,11 @@ function slowTextChunks(text: string): StreamChunk[] {
 }
 
 // ------------------------------------------------------------------
-// 断言（s03 同款）
+// 断言（pipeline 脚本同款）
 // ------------------------------------------------------------------
 
 function fail(message: string): never {
-  console.error(`[s05] FAIL: ${message}`);
+  console.error(`[source-fidelity] FAIL: ${message}`);
   process.exit(1);
 }
 
@@ -165,18 +165,18 @@ let probeSeq = 0;
 function engineEvent(type: string, payload: unknown): SessionEvent {
   probeSeq += 1;
   return {
-    id: `s05-probe-${String(probeSeq)}` as SessionEvent["id"],
-    sessionId: "s05-compact-probe" as SessionEvent["sessionId"],
+    id: `source-fidelity-probe-${String(probeSeq)}` as SessionEvent["id"],
+    sessionId: "compact-gate-probe" as SessionEvent["sessionId"],
     type: type as SessionEvent["type"],
     timestamp: new Date(),
-    traceId: "s05-probe" as SessionEvent["traceId"],
+    traceId: "source-fidelity-probe" as SessionEvent["traceId"],
     sequenceNumber: 0,
     payload,
   };
 }
 
 async function main(): Promise<void> {
-  // ---- dsh 侧装配（s03 同款）----
+  // ---- dsh 侧装配（pipeline 脚本同款）----
   const ctx = new Context();
   await ctx.plugin(LlmRuntime);
   await ctx.plugin(SessionStore);
@@ -194,7 +194,7 @@ async function main(): Promise<void> {
   ]);
   ctx.llm.registerAdapter(["mock"], adapter);
 
-  const sessionId = DshSessionId("s05-zcode-loop");
+  const sessionId = DshSessionId("source-fidelity-zcode-loop");
   const handle = await ctx.agents.create({
     sessionId,
     agentOptions: { provider: "mock", model: "mock" },
@@ -220,7 +220,7 @@ async function main(): Promise<void> {
     ac1Source.name === "probe-scheduler",
     `AC1: source.name must survive projection, got ${JSON.stringify(ac1Source)}`,
   );
-  console.log("[s05] AC1 producer source preserved: {kind:scheduler, name:probe-scheduler} ✓");
+  console.log("[source-fidelity] AC1 producer source preserved: {kind:scheduler, name:probe-scheduler} ✓");
 
   // ---- AC2：steering 路径 source 保真（busy 时 steerActive 落原消息对象）----
   agent.followup(
@@ -270,7 +270,7 @@ async function main(): Promise<void> {
     turn2Human.data.source.kind === "user",
     `human followup in the steered turn must still project {kind:"user"}, got ${JSON.stringify(turn2Human.data.source)}`,
   );
-  console.log("[s05] AC2 steering source preserved + no new turn + human turn unaffected ✓");
+  console.log("[source-fidelity] AC2 steering source preserved + no new turn + human turn unaffected ✓");
 
   // ---- AC4：人类轮不回归（默认人类 source 投影逐字节同修复前）----
   agent.followup(
@@ -290,7 +290,7 @@ async function main(): Promise<void> {
     messageText(ac4Event.data.content) === "plain human followup",
     `AC4: human turn text must survive verbatim, got ${JSON.stringify(messageText(ac4Event.data.content))}`,
   );
-  console.log("[s05] AC4 human turn regression: {kind:user} + verbatim text ✓");
+  console.log("[source-fidelity] AC4 human turn regression: {kind:user} + verbatim text ✓");
 
   // ---- AC3：压缩门单元（直接构造 EventStoreBridge，不跑完整插件）----
   const { appends, session: fakeSession } = createFakeSession();
@@ -348,11 +348,11 @@ async function main(): Promise<void> {
     `AC3: sidecar model events must be dropped-and-counted, got ${JSON.stringify(stats.droppedByType)}`,
   );
   console.log(
-    `[s05] AC3 compact gate: surface=${JSON.stringify(surfaceTypes)}, warns=${String(probeLogger.warns.length)}, drops=${String(stats.dropped)} (${JSON.stringify(stats.droppedByType)}) ✓`,
+    `[source-fidelity] AC3 compact gate: surface=${JSON.stringify(surfaceTypes)}, warns=${String(probeLogger.warns.length)}, drops=${String(stats.dropped)} (${JSON.stringify(stats.droppedByType)}) ✓`,
   );
 
   await handle.dispose();
-  console.log("[s05] PASS: AC1-AC4 all green (source fidelity + steering + compact gate + human regression)");
+  console.log("[source-fidelity] PASS: AC1-AC4 all green (source fidelity + steering + compact gate + human regression)");
   process.exit(0);
 }
 

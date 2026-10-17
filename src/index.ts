@@ -1,5 +1,5 @@
 /**
- * dsh-plugin-zcode-loop — Cordis 插件入口（S03 + 阶段 3 resume 冷恢复 + 阶段 4
+ * dsh-plugin-zcode-loop — Cordis 插件入口（阶段 3 resume 冷恢复 + 阶段 4
  * 会话内换模型/换档）。
  *
  * 把 vendored ZCode `AgentRuntime` 作为外部插件装进 dsh，替换 stock
@@ -10,9 +10,9 @@
  * 路径；persistence backend 在场时 prepare→persistence.create→…→enter→announce
  * 让 session 事件经 live 路由落进写句柄，无 backend 时退化为纯内存发布）：
  *
- *   dsh session 创建/挂载 → event-store 桥（S02，唯一落盘真相）
+ *   dsh session 创建/挂载 → event-store 桥（唯一落盘真相）
  *   → 工具桥（dsh 工具面 → ZCode ToolRegistry；执行回 dsh 管线）
- *   → model-bridge（S02，经 dsh llm 路由）→ permissionBroker 直通 allow
+ *   → model-bridge（经 dsh llm 路由）→ permissionBroker 直通 allow
  *   → systemPrompt = dsh `SystemPrompt.assemble()` 渲染文本（每轮存活的
  *     `config.systemPrompt` 接缝 + 构造期最小 contextBuilder，见
  *     `bridges/system-prompt-bridge.ts` 模块头）
@@ -250,7 +250,7 @@ export class ZcodeLoop extends Service implements AgentFactory {
   /**
    * 本插件自己的 fiber ctx（构造参数，构造期捕获）。
    *
-   * S04 现场实测：`createAgent` 被调用时 `this` 是 cordis traceable receiver
+   * 现场实测：`createAgent` 被调用时 `this` 是 cordis traceable receiver
    * （dsh AgentRegistry.create 用 `getTraceable(ownerCtx, target)` 把调用方 ctx
    * 绑进 receiver，"ownership follows the caller"），因此 `this.ctx` 会**重绑成
    * 调用方入口插件**（如 headless-runner）的 ctx，其注入面没有 systemPrompt 等
@@ -289,7 +289,7 @@ export class ZcodeLoop extends Service implements AgentFactory {
     // enter → agents.enter → announce → 补存 setup 窗口事件 → announce('startup')。
     // 原实现用 sessions.create（prepare+enter+announce 一步发布）：在真实 dsh
     // （dsh-base 挂了 session-persistence-jsonl）下没有任何写句柄，session log
-    // 不会落盘 —— S04 修复（最小改动，报告声明），无 persistence 时行为与 S03 一致。
+    // 不会落盘 —— 修复（最小改动，报告声明），无 persistence 时行为与纯内存装配一致。
     const session = this.loopCtx.sessions.prepare(options.sessionId, {
       ...(options.meta === undefined ? {} : { meta: options.meta }),
       ...(options.seed === undefined ? {} : { seed: options.seed }),
@@ -441,7 +441,7 @@ export class ZcodeLoop extends Service implements AgentFactory {
   }
 
   /**
-   * createAgent 后半段的共用装配（S04 语句序列原样抽取；resume 复用同一序列）：
+   * createAgent 后半段的共用装配（语句序列原样抽取；resume 复用同一序列）：
    * 路由解析 → 桥件 → agent 构造 → prompt 装配 → engine 创建 → setup →
    * 补存 suffix → enter/announce → 返回 handle。`source` 只是 announce 字面量与
    * resume 冷路径开关（create 传 "startup"，语句行为与抽取前完全一致）。

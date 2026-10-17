@@ -1,18 +1,18 @@
 /**
- * tool-bridge — 共享边界样例 3（工具执行）的 S03 实现。
+ * tool-bridge — 工具执行桥（共享边界样例 3 的实现）。
  *
  * 方向与 model-bridge 相反：把 dsh `ctx.tools` 的**工具面**投影进 ZCode
  * `ToolRegistry`，让嵌入引擎"看见"并"调用" dsh 工具：
  *
  * - schema 同步（每 turn 前由外壳调用 {@link DshToolBridge.syncTools}）：
  *   `ctx.tools.schemas()`（name/description/parameters 的 JSON Schema 投影）
- *   → ZCode `ToolEntry`（capability/inputSchema/metadata 等必填字段按 S02 实测
+ *   → ZCode `ToolEntry`（capability/inputSchema/metadata 等必填字段按引擎实测
  *   形状补齐；元数据映射 `isConcurrencySafe` → `concurrentSafe`）。
  * - 执行（不变量"工具执行必须过 dsh 管线"）：ToolEntry.handler **不实现工具**，
  *   只把调用翻译成 `ctx.tools.execute({callId, name, arguments, agent, signal})`，
  *   由 dsh ToolRuntime 走完整 pre-execute waterfall → guards → 执行 →
  *   post-execute 管线；dsh 工具插件对本桥无感。判别 probe：注册
- *   `tools/pre-execute` listener 计数（S03 集成脚本断言 ≥1）。
+ *   `tools/pre-execute` listener 计数（pipeline 集成脚本断言 ≥1）。
  * - 结果映射：dsh `ToolExecutionResult.content`（ContentBlock[]）折叠为文本；
  *   `isError` 时抛 `Error`（引擎记 tool 失败 → event-store-bridge 落
  *   `tool/result{isError}`）。

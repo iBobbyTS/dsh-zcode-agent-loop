@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// S01 AC 3：门面外无任何文件 import `@zcode/*`。
+// 门面隔离断言：门面外无任何文件 import `@zcode/*`。
 // 扫描本仓库自己的源码（排除 vendor/、reference/、node_modules/、dist/、.git/、.agent-work/），
 // 命中 import 语句里出现 `@zcode/` 的文件只允许是 src/engine-facade.ts。
 import { readdirSync, readFileSync, statSync } from "node:fs";

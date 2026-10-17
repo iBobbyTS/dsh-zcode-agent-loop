@@ -1,5 +1,5 @@
 /**
- * S02 集成自证脚本（AC 1–4，边界样例 1/2）：
+ * 事件投影与会话重建集成自证脚本（AC 1–4，边界样例 1/2）：
  *
  * 环境：`new Context()`（npm @deepseek-ai/cordis）+ npm 装 `dsh-llm`/`dsh-session`
  * + fake llm adapter（注册写法照抄 reference 下 dsh agent-loop 测试的 MockAdapter）。
@@ -122,7 +122,7 @@ interface RecordedMessage {
 }
 
 function fail(message: string): never {
-  console.error(`[s02] FAIL: ${message}`);
+  console.error(`[projection] FAIL: ${message}`);
   process.exit(1);
 }
 
@@ -140,12 +140,12 @@ async function main(): Promise<void> {
   ]);
   ctx.llm.registerAdapter(["mock"], adapter);
 
-  const dshSession = DshSession.create(DshSessionId("s02-zcode-loop-bridge"));
+  const dshSession = DshSession.create(DshSessionId("projection-zcode-loop-bridge"));
 
-  // ---- ZCode 侧装配（全经门面 + S02 桥）----
-  const sessionId = createSessionId("s02-zcode-loop");
+  // ---- ZCode 侧装配（全经门面 + 桥）----
+  const sessionId = createSessionId("projection-zcode-loop");
   const bridge = new DshSessionEventStoreBridge({ session: dshSession, sessionId });
-  const workingDirectory = mkdtempSync(join(tmpdir(), "zcode-loop-s02-"));
+  const workingDirectory = mkdtempSync(join(tmpdir(), "zcode-loop-projection-"));
 
   const registry = createToolRegistry();
   const echoInputs: unknown[] = [];
@@ -159,7 +159,7 @@ async function main(): Promise<void> {
     outputSchema: {},
     permission: {
       permission: "test.echo",
-      reason: "S02 test tool",
+      reason: "projection test tool",
       riskLevel: "low",
       sideEffectScope: "none",
       needsApproval: false,
@@ -204,12 +204,12 @@ async function main(): Promise<void> {
   const result = await runtime.executeTurn("please call the echo tool");
   assert(result.response === "Tool says: hi", `unexpected response: ${JSON.stringify(result.response)}`);
   assert(echoInputs.length === 1, `expected exactly one tool execution, got ${echoInputs.length}`);
-  console.log(`[s02] AC1 turn completed: response=${JSON.stringify(result.response)}, tool executions=${echoInputs.length}`);
+  console.log(`[projection] AC1 turn completed: response=${JSON.stringify(result.response)}, tool executions=${echoInputs.length}`);
 
   // 引擎视角的 ZCode 事件序列（经桥进入 store 的原始事件）。
   const zcodeEvents: SessionEvent[] = await bridge.getEvents(sessionId);
   const zcodeTypes = zcodeEvents.map((event) => event.type);
-  console.log(`[s02] zcode event sequence: ${zcodeTypes.join(" -> ")}`);
+  console.log(`[projection] zcode event sequence: ${zcodeTypes.join(" -> ")}`);
   assert(zcodeTypes[0] === SessionEventType.TurnStarted, "first ZCode event must be turn_started");
   assert(zcodeTypes.at(-1) === SessionEventType.TurnComplete, "last ZCode event must be turn_complete");
   const adapterCalls = adapter.requests.length;
@@ -218,7 +218,7 @@ async function main(): Promise<void> {
   // ---- AC2：dsh log 事件序列合法（turn 配对、tool call/result 配对）----
   const log = dshSession.snapshotEvents();
   const logTypes = log.map((event) => event.type);
-  console.log(`[s02] dsh log sequence: ${logTypes.join(" -> ")}`);
+  console.log(`[projection] dsh log sequence: ${logTypes.join(" -> ")}`);
   assert(log[0]?.type === "turn/start", "dsh log must open with turn/start");
   const turnStarts = log.filter((event) => event.type === "turn/start");
   const turnEnds = log.filter((event) => event.type === "turn/end");
@@ -277,7 +277,7 @@ async function main(): Promise<void> {
     expanded.some((member) => member.chunk.type === "finish"),
     "assistant stream must carry a terminal finish chunk",
   );
-  console.log(`[s02] AC2 dsh log legal: turn paired, tool call/result paired via sourceEventSeqs (callSeq=${String(toolCallEvent.seq)}, resultSeq=${String(toolResultEvent.seq)})`);
+  console.log(`[projection] AC2 dsh log legal: turn paired, tool call/result paired via sourceEventSeqs (callSeq=${String(toolCallEvent.seq)}, resultSeq=${String(toolResultEvent.seq)})`);
 
   // ---- AC3：deriveMessages 与引擎实际发出的 provider 请求消息结构一致 ----
   // 引擎每个请求会注入合成的 system/user 运行时附件（runtime reminder 等，
@@ -293,8 +293,8 @@ async function main(): Promise<void> {
   const derived = dshSession.deriveMessages();
   const derivedRoles = derived.map((message) => message.role);
   const recordedRoles = recordedMessages.map((message) => message.role);
-  console.log(`[s02] provider request roles: ${recordedRoles.join(" -> ")}`);
-  console.log(`[s02] dsh derived roles:      ${derivedRoles.join(" -> ")}`);
+  console.log(`[projection] provider request roles: ${recordedRoles.join(" -> ")}`);
+  console.log(`[projection] dsh derived roles:      ${derivedRoles.join(" -> ")}`);
 
   // 末条 derived 是本轮新响应（不在请求里）；其余必须按序出现在请求中。
   assert(derived.length >= 1, "derived history must not be empty");
@@ -316,8 +316,8 @@ async function main(): Promise<void> {
   }
 
   // system prompt 一致：dsh system/message 的文本 = 请求全部前导 system 消息的拼接
-  // （S03 起桥合并多条前导 system——custom prompt 路径引擎发 2 条、stock 路径 3 条，
-  // 都是模型可见内容；本断言随之从"等于首条"升级为"等于拼接"，S03 修复声明见 HANDOFF）。
+  // （桥后来合并多条前导 system——custom prompt 路径引擎发 2 条、stock 路径 3 条，
+  // 都是模型可见内容；本断言随之从"等于首条"升级为"等于拼接"，修复声明见归档 HANDOFF）。
   const derivedSystem = derived.find((message) => message.role === "system");
   const recordedSystemText: string[] = [];
   for (const message of recordedMessages) {
@@ -386,7 +386,7 @@ async function main(): Promise<void> {
     derivedText === result.response,
     `final assistant text mismatch: ${JSON.stringify(derivedText)} vs ${JSON.stringify(result.response)}`,
   );
-  console.log("[s02] AC3 deriveMessages matches provider request structure (roles/order/tool_call pairing)");
+  console.log("[projection] AC3 deriveMessages matches provider request structure (roles/order/tool_call pairing)");
 
   // ---- AC4：未知事件注入 → 丢弃计数 > 0 且会话不炸 ----
   const statsBefore = bridge.dropStats().dropped;
@@ -414,7 +414,7 @@ async function main(): Promise<void> {
     dshSession.deriveMessages().length === derived.length,
     "unknown event must not change derived history",
   );
-  console.log(`[s02] AC4 unknown event dropped: dropped=${String(stats.dropped)}, dsh log unchanged (${String(logLengthBefore)} events)`);
+  console.log(`[projection] AC4 unknown event dropped: dropped=${String(stats.dropped)}, dsh log unchanged (${String(logLengthBefore)} events)`);
 
   // ---- 附加 probe：dsh 终态 error finish → DshModelError 保 providerCode ----
   const errorCtx = new Context();
@@ -443,7 +443,7 @@ async function main(): Promise<void> {
   const probeCode = caught.code;
   const probeStatus = caught.status;
   assert(probeCode === "RATE_LIMIT_PROBE" && caught.providerCode === "RATE_LIMIT_PROBE", `providerCode must survive, got ${probeCode}`);
-  console.log(`[s02] probe error finish -> DshModelError providerCode=${caught.providerCode} (status=${String(probeStatus)})`);
+  console.log(`[projection] probe error finish -> DshModelError providerCode=${caught.providerCode} (status=${String(probeStatus)})`);
 
   // ---- AC5：dsh resolveModelInfo 元数据 → 引擎面 Model 声明（取值链 + 档位请求通路）----
   const metaCtx = new Context();
@@ -491,7 +491,7 @@ async function main(): Promise<void> {
   );
   assert(metaModel.optionSpecs.maxOutputTokens.max === 7_777, "maxOutputTokens cap must come from defaultMaxTokens");
   console.log(
-    `[s02] AC5 metadata chain: contextWindow=${String(metaModel.properties.contextWindow)}, maxOut=${String(metaModel.optionSpecs.maxOutputTokens.max)}, efforts=${metaModel.optionSpecs.reasoningLevel.values.join("|")}, midConversationSystem=${String(metaModel.properties.supportsMidConversationSystem)}`,
+    `[projection] AC5 metadata chain: contextWindow=${String(metaModel.properties.contextWindow)}, maxOut=${String(metaModel.optionSpecs.maxOutputTokens.max)}, efforts=${metaModel.optionSpecs.reasoningLevel.values.join("|")}, midConversationSystem=${String(metaModel.properties.supportsMidConversationSystem)}`,
   );
 
   // 显式 config 覆盖优先于 resolved。
@@ -528,10 +528,10 @@ async function main(): Promise<void> {
     String(metaAdapter.requests.at(-1)?.reasoningEffort) === "low",
     "absent reasoningLevel must let dsh materialize its defaultEffort (low), not a bridge-invented value",
   );
-  console.log("[s02] AC5 reasoning effort path: bind('high') -> reasoningEffort=high; absent -> dsh default 'low'");
+  console.log("[projection] AC5 reasoning effort path: bind('high') -> reasoningEffort=high; absent -> dsh default 'low'");
 
-  console.log(`[s02] dsh log total events: ${String(dshSession.snapshotEvents().length)}, bridge drops: ${String(stats.dropped)}`);
-  console.log("[s02] PASS: AC1-AC5 + error-finish probe all green");
+  console.log(`[projection] dsh log total events: ${String(dshSession.snapshotEvents().length)}, bridge drops: ${String(stats.dropped)}`);
+  console.log("[projection] PASS: AC1-AC5 + error-finish probe all green");
 }
 
 main().catch((error: unknown) => {

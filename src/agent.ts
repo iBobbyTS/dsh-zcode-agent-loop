@@ -1,5 +1,5 @@
 /**
- * agent — ZCode 引擎驱动的最小 dsh Agent（S03）。
+ * agent — ZCode 引擎驱动的最小 dsh Agent。
  *
  * 实现 `@deepseek-ai/dsh-agent` 的运行时 Agent 面（followup/steer/inject/cancel/
  * whenIdle/runMaintenance/status/inbox）。驱动模型（原型 v0）：

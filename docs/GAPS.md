@@ -5,7 +5,7 @@
 
 本文档记录 ZCode 引擎面 `Model` 声明（`ModelProperties` + `ModelOptionSpecs`）与 dsh llm
 模型元数据（`LlmResolvedModelInfo`，经 `ctx.llm.resolveModelInfo(provider, model)` 按路由解析）
-之间的映射现状：哪些已打通、哪些不支持及原因。断言见 `scripts/s02-integration.ts` AC5。
+之间的映射现状：哪些已打通、哪些不支持及原因。断言见 `scripts/projection-integration.ts` AC5。
 
 2026-10-17 补充：会话内换模型（阶段 4）起，上述取值在**每次 `model/selection` 事件**后
 经 `createDshModelBridge(...).refresh({resolved})` 热更新（声明快照整体重算，对下一次
@@ -101,5 +101,5 @@ provider 前缀缓存。正式版若在意，可从 dsh session 的 request head
 ## 引擎/目录不对账的残留
 
 - 引擎注入的合成 system（runtime reminder 等）只进内存请求轨迹、不落 session：
-  dsh log 与 provider 请求是"有序子序列"关系，非 1:1（S02 实测，断言按子序列写）。
+  dsh log 与 provider 请求是"有序子序列"关系，非 1:1（实测，断言按子序列写）。
 - system prompt 每 agent 装配一次（构造期），dsh prompt 插件运行期改段不热更。

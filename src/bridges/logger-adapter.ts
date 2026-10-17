@@ -23,7 +23,7 @@ import type { Context } from "@deepseek-ai/cordis";
 import type { LogContext, Logger } from "../engine-facade.js";
 
 /** console 直写统一走 stderr（cordis web 模式只进内存 buffer，见 createDshLoggerAdapter）。
- *  日志走 stderr、数据走 stdout 是 Node 惯例：headless 形态（s04 smoke）以 stdout
+ *  日志走 stderr、数据走 stdout 是 Node 惯例：headless 形态（smoke 冒烟）以 stdout
  *  交付终答，logger 行不得混入。 */
 const CONSOLE_METHOD = {
   debug: console.error,

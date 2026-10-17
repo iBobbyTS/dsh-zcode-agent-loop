@@ -21,12 +21,12 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "cold-start": "tsx scripts/cold-start.ts",
     "verify:facade": "node scripts/assert-facade-isolation.mjs",
-    "verify:s02": "tsx scripts/s02-integration.ts",
-    "verify:s03": "tsx scripts/s03-integration.ts",
-    "verify:s04": "node scripts/smoke.mjs",
-    "verify:s05": "tsx scripts/s05-integration.ts",
     "verify": "pnpm verify:facade && pnpm cold-start",
-    "verify:s06": "tsx scripts/s06-integration.ts"
+    "verify:projection": "tsx scripts/projection-integration.ts",
+    "verify:pipeline": "tsx scripts/pipeline-integration.ts",
+    "verify:smoke": "node scripts/smoke.mjs",
+    "verify:source-fidelity": "tsx scripts/source-fidelity-integration.ts",
+    "verify:goal-chain": "tsx scripts/goal-chain-integration.ts"
   },
   "dependencies": {
     "@zcode/contracts": "workspace:*",

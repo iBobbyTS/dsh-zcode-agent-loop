@@ -9,7 +9,7 @@ dsh 插件（`src/`）中的桥接现状。覆盖**引擎能力层**；姊妹篇
 
 - ZCode 快照 **v3.15.1**（[README-PROTOTYPE.md](../README-PROTOTYPE.md) 口径；vendor 内
   各包 `package.json` 为 private、不自带版本号）。
-- vendored 引入基准：commit `4a836e6`（S01），`vendor/zcode/` 与 `reference/` 快照
+- vendored 引入基准：commit `4a836e6`，`vendor/zcode/` 与 `reference/` 快照
   **逐字节一致**，不可修改。
 - **vendor 快照升级时本文档需整体重新盘点**——所有行都钉死在这个版本上。
 
@@ -37,7 +37,7 @@ dsh 插件（`src/`）中的桥接现状。覆盖**引擎能力层**；姊妹篇
 | `AgentRuntimeDeps` 依赖端口 | 52 | 5 |
 | `core/src/runtime/methods/` 方法文件（不含 test） | 104 | turn-loop 家族 + 事件落盘 |
 | 引擎 `SessionEventType` 事件类型（contracts） | 84 | 事件桥翻译 9，丢弃 75 |
-| 引擎内建工具（`core/src/tool/handlers/`，约 30 族 + 工作流族） | 全量 | 注册 0（`toolAllowlist: []`），dsh 工具 26 个经桥全量同步（S04 口径） |
+| 引擎内建工具（`core/src/tool/handlers/`，约 30 族 + 工作流族） | 全量 | 注册 0（`toolAllowlist: []`），dsh 工具 26 个经桥全量同步（冒烟口径） |
 
 插件传入的 7 个 config 字段：`workingDirectory` / `modelSelection` / `systemPrompt` /
 `toolAllowlist` / `dynamicWorkflowEnabled` / `dynamicWorkflowToolsOnDemand`（后两个为
@@ -53,7 +53,7 @@ dsh 插件（`src/`）中的桥接现状。覆盖**引擎能力层**；姊妹篇
 
 | 功能 | 描述 | 引擎源码 | 桥实现 | dsh 等价物 | 状态 | 备注 |
 |---|---|---|---|---|---|---|
-| turn 主循环 | 多步模型↔工具循环、abort、maxTurns | `core/src/runtime/methods/turn-loop.ts`、`turn-model-step.ts` | `src/agent.ts`（drain → `executeTurn`） | 无（本插件即替代 stock loop） | 已桥接·完整 | S04 AC1/AC2 + 浏览器验收（含真实模型）。错误路径 tool/call 未解析时 durable log 会被严格读取端拒绝（README 已知边界） |
+| turn 主循环 | 多步模型↔工具循环、abort、maxTurns | `core/src/runtime/methods/turn-loop.ts`、`turn-model-step.ts` | `src/agent.ts`（drain → `executeTurn`） | 无（本插件即替代 stock loop） | 已桥接·完整 | 冒烟 AC1/AC2 + 浏览器验收（含真实模型）。错误路径 tool/call 未解析时 durable log 会被严格读取端拒绝（README 已知边界） |
 | 逐字流式 | `modelStreaming:"on"` 时走 `streamText` 并发 delta 事件 | `core/src/runtime/methods/context.ts`（`shouldStreamModelText`）、`model.ts` | `src/bridges/model-bridge.ts`（`streamText`→`prepared.stream`）、`src/bridges/event-store-bridge.ts`（`accumulateStreaming` + live `agent/assistant-stream` frame：start/chunk/end，attemptId/revision 语义照抄 stock `AssistantStreamAttempt`）、`src/index.ts`（Config.streaming 缺省开） | stock 的 live 面（web UI 逐字渲染） | 已桥接·完整 | 阶段 1 实测：0.4s 采样 20+ 步连续渐增；落盘 `assistant/message` 带真实累积 `stream` |
 | 流中工具执行 | 流式中提前调度已完整的 tool-call | `core/src/runtime/methods/streaming-tool-coordinator.ts` | —（引擎 turn 流程内部行为） | 无 | 引擎内部·默认生效 | 阶段 1 流式开启后自动活跃，无需桥接 |
 | 输出 token 续写 | `finishReason=length` 时自动续写（≤3 次），与压缩协同 | `core/src/runtime/methods/turn-output-token-continuation.ts` | — | 无 | 引擎内部·默认生效 | 无条件生效，无需桥接 |
@@ -73,16 +73,16 @@ dsh 插件（`src/`）中的桥接现状。覆盖**引擎能力层**；姊妹篇
 | 待发队列（编辑/重排/删除） | 引擎 pending-input 队列全套 API | `core/src/runtime/command-queue.ts` + pendingInput 系列方法 | 插件 `src/inbox.ts`（`ZcodeLoopInbox` 自实现 append/prepend/replace/remove/splice，落 `agent/inbox/spliced`） | 插件 inbox 即 dsh `Inbox` 接口实现 | 不需要·dsh 等价 | inbox 接口成员全实现；live 事件（阶段 6 已发）；next-step 语义有生产者（steer/inject） |
 | followup 模式（queue/guide）/ 自动排水 | `setFollowupMode` / `setQueueAutoDrain` | `core/src/runtime/methods/runtime-command-*.ts` | 未接 | 无 | 不需要·边缘 | 插件自管 drain 循环 |
 | 输入准入 | `admitPrompt` 交互准入票据 | `core/src/runtime/methods/prompt-admission.ts` | 未接 | 无 | 不需要·边缘 | 宿主交互形态；插件 inbox 承担输入面 |
-| user/message source 保真 | producer source（user/goal/scheduler…）随消息落 surface | —（stock loop 逐条 append 原消息对象） | 阶段 8a：claim 批原消息经 `setPendingUserMessages` 透传，`model_request` 逐条落盘（steering 路径同款直接 append 原消息）；无批回退引擎 text 重建 `{kind:"user"}` | — | 已桥接·完整 | goal 续轮（round driver 预约校验按 source/goalId/round 匹配）依赖此保真；s05 AC1/AC2/AC4 回归 |
+| user/message source 保真 | producer source（user/goal/scheduler…）随消息落 surface | —（stock loop 逐条 append 原消息对象） | 阶段 8a：claim 批原消息经 `setPendingUserMessages` 透传，`model_request` 逐条落盘（steering 路径同款直接 append 原消息）；无批回退引擎 text 重建 `{kind:"user"}` | — | 已桥接·完整 | goal 续轮（round driver 预约校验按 source/goalId/round 匹配）依赖此保真；source-fidelity 脚本 AC1/AC2/AC4 回归 |
 | turnBoundary 投影 | goal 工具开轮边界 authority（`stateOf(session,"turnBoundary")`） | —（stock 由 agent-loop 注册 `turnBoundaryProjectionDefinition`） | 阶段 8b：`src/index.ts` 重挂同语义投影（纯 turn/step 事件解释，运行时 `ctx.inject` 可选注册——host 回归面无 sessionProjections 服务时跳过） | dsh-session-projection | 已桥接·完整 | 容器 probe 实测：缺它 create_goal 拒绝 "goal tools require an open model turn" |
 | initiator 边界 | `ctx.agents.currentInitiator()`（AsyncLocalStorage） | —（stock `withInitiator(this, kick)`） | 阶段 8b：drain 包 `runWithInitiator`（`withInitiator(agent, drain)`） | dsh-agent | 已桥接·完整 | goal 工具 authority 的第三要素；probe 实测无 GOAL_TOOL_* 拒绝 |
-| dsh goal 工具链 | create/get/update_goal + goal-round-driver 自动续轮 + todo_write | —（全在 dsh 层） | 工具经桥同步（todo_write/get_goal/create_goal/update_goal）；续轮 = followup(goal-source 消息) 走 inbox→drain 正常通路 | dsh-goal / dsh-goal-round-driver / dsh-tool-goal / dsh-tool-todo | 已桥接·完整（阶段 8 实测） | 双层验收：host 回归 `pnpm verify:s06`（tsx 直跑 src；goal 族钉 0.2.1-alpha.5 已进 devDependencies——npm dist-tag latest 钉在坏代际 0.0.1-rc.1，装必须带版本号）+ 容器 probe（真插件 + mock adapter，验部署同字节 bundle）：续轮真实发生（4 请求恰量）、goal-source user/message 落盘、goal 达 complete、todo/write 落盘、turn ×2；已知边界：本插件不发 `agent/pre-step`，goal 驱动器对无效轮的 fail-closed 拦截不生效（happy path 不受影响）；装配 dsh-tool-* 需先有 sessionProjections 服务，否则插件 inject 挂起不注册工具 |
+| dsh goal 工具链 | create/get/update_goal + goal-round-driver 自动续轮 + todo_write | —（全在 dsh 层） | 工具经桥同步（todo_write/get_goal/create_goal/update_goal）；续轮 = followup(goal-source 消息) 走 inbox→drain 正常通路 | dsh-goal / dsh-goal-round-driver / dsh-tool-goal / dsh-tool-todo | 已桥接·完整（阶段 8 实测） | 双层验收：host 回归 `pnpm verify:goal-chain`（tsx 直跑 src；goal 族钉 0.2.1-alpha.5 已进 devDependencies——npm dist-tag latest 钉在坏代际 0.0.1-rc.1，装必须带版本号）+ 容器 probe（真插件 + mock adapter，验部署同字节 bundle）：续轮真实发生（4 请求恰量）、goal-source user/message 落盘、goal 达 complete、todo/write 落盘、turn ×2；已知边界：本插件不发 `agent/pre-step`，goal 驱动器对无效轮的 fail-closed 拦截不生效（happy path 不受影响）；装配 dsh-tool-* 需先有 sessionProjections 服务，否则插件 inject 挂起不注册工具 |
 
 ## 3. 工具系统
 
 | 功能 | 描述 | 引擎源码 | 桥实现 | dsh 等价物 | 状态 | 备注 |
 |---|---|---|---|---|---|---|
-| 内建工具面（全禁） | bash/read/edit/write/glob/grep/webfetch/websearch/todo/skill/cron/off-peak/ask-user-question/plan-mode/target/node-repl/agent/媒体读取（image/pdf/video/session-context）/消息族/工作流族 等 | `core/src/tool/handlers/` | `config.toolAllowlist: []` 全禁；`src/bridges/tool-bridge.ts` 只同步 dsh 工具 | dsh-tool-bash / fs / fs-search / str-replace-editor / web / todo / skill / schedule / jobs / ask-user / goal / subagent / workflow / terminal … | 不需要·dsh 等价 | S04 断言「零 ZCode 内建泄漏」；dsh 26 工具经桥全量进引擎 |
+| 内建工具面（全禁） | bash/read/edit/write/glob/grep/webfetch/websearch/todo/skill/cron/off-peak/ask-user-question/plan-mode/target/node-repl/agent/媒体读取（image/pdf/video/session-context）/消息族/工作流族 等 | `core/src/tool/handlers/` | `config.toolAllowlist: []` 全禁；`src/bridges/tool-bridge.ts` 只同步 dsh 工具 | dsh-tool-bash / fs / fs-search / str-replace-editor / web / todo / skill / schedule / jobs / ask-user / goal / subagent / workflow / terminal … | 不需要·dsh 等价 | 冒烟断言「零 ZCode 内建泄漏」；dsh 26 工具经桥全量进引擎 |
 | 工具注册表与每 turn 同步 | 增量 upsert + 撤销消失项 | `core/src/tool/registry.ts` | `src/bridges/tool-bridge.ts` `syncTools()` | — | 已桥接·完整 | 每 turn 前同步（任务合同） |
 | 工具执行/调度 | 并发分类、批跑、取消、超时 | `core/src/tool/scheduler.ts`、`tool/executor/` | 桥 handler → `ctx.tools.execute`（dsh 管线） | dsh ToolRuntime（pre-execute waterfall） | 已桥接·有偏差 | 并发分类 fail-closed（`isConcurrencySafe` 缺席/异常按独占）；桥 120s 超时 / 256KB 截断为常量，dsh 的 timeout-policy 插件不被感知 |
 | 工具元数据映射 | `ToolEntry` 元数据（readOnly/destructive/concurrentSafe/needsApproval/riskLevel/sideEffectScope） | `core/src/tool/types.ts` | `src/bridges/tool-bridge.ts`（注册期映射） | dsh `ToolDefinition` | 已桥接·有偏差 | 仅 `concurrentSafe` 有真实来源；其余硬编码——`needsApproval:false` 使引擎永不发起权限交互（有意，交给 dsh） |
@@ -123,7 +123,7 @@ dsh 插件（`src/`）中的桥接现状。覆盖**引擎能力层**；姊妹篇
 
 | 功能 | 描述 | 引擎源码 | 桥实现 | dsh 等价物 | 状态 | 备注 |
 |---|---|---|---|---|---|---|
-| 事件→dsh v4 投影 | 引擎 SessionEvent 翻译为合法 dsh SessionEvent 落 jsonl | contracts `SessionEventType`（84 类型） | `src/bridges/event-store-bridge.ts` | dsh session-persistence-jsonl | 已桥接·完整 | 翻译 9 类型；其余 75 类型的逐类明细（会发出被丢 / 门控不产生 / 无发射点）见 [PROJECTION.md](PROJECTION.md)；阶段 5 起压缩 sidecar 的 `model_*` 也不翻译（压缩门）；S04 AC2 独立重放逐字匹配 |
+| 事件→dsh v4 投影 | 引擎 SessionEvent 翻译为合法 dsh SessionEvent 落 jsonl | contracts `SessionEventType`（84 类型） | `src/bridges/event-store-bridge.ts` | dsh session-persistence-jsonl | 已桥接·完整 | 翻译 9 类型；其余 75 类型的逐类明细（会发出被丢 / 门控不产生 / 无发射点）见 [PROJECTION.md](PROJECTION.md)；阶段 5 起压缩 sidecar 的 `model_*` 也不翻译（压缩门）；冒烟 AC2 独立重放逐字匹配 |
 | resume / 冷恢复 | `resumeFromStore` + 会话水合 | `core/src/runtime/methods/resume.ts`、`agent/session-history-hydrator.ts` | `src/bridges/resume-adapter.ts`（dsh 事件→引擎 `MessageWithParts` 逆向 + 哑 `SessionStorePort`：读空写吞）+ `src/index.ts`（stock resumeWith 形状：persistence.open→read→interruptedTurnClosers→prepare(seed)→装配→`resumeFromStore({persistedMessages})`）+ 事件桥 turn 号偏移（setTurnBase） | dsh session jsonl | 已桥接·完整 | 阶段 3 实测：容器冷重启后旧会话续聊、模型答出重启前数字、jsonl turn 连续；blank 会话（UI 固定 id）经 resume 复活。哑 store 必须吞 `saveMessage/savePart`（sessionPersisted=true 后 turn 循环每消息都调）；turn 偏移防重复 turn 号（v4 会拒绝，实测样本在 `.agent-work/tmp/dsh-home-config-backup/sessions-corrupt-pre-turnfix/`） |
 | rewind | 对话回退到某消息重跑 | `core/src/runtime/methods/rewind.ts`、`rewind-message.ts` | 未接 | 无 | 待评估（低优先） | |
 | checkpoints / 文件回滚 | 工作区检查点、文件级回滚预览/应用 | `core/src/runtime/methods/workspace-checkpoints.ts`、`file-rewind.ts` | 未接 | 无 | 待评估（低优先） | |

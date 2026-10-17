@@ -19,12 +19,12 @@ dsh**（devDependency `@deepseek-ai/dsh`），替换其自带 `dsh-agent-loop`�
 
 | 路径 | 内容 |
 | --- | --- |
-| `vendor/zcode/` | ZCode 引擎快照（S01 vendored，inspect-only 于 S04） |
+| `vendor/zcode/` | ZCode 引擎快照（vendored，inspect-only） |
 | `src/` | dsh 插件：`index.ts`（ZcodeLoop 工厂）+ `agent.ts`/`inbox.ts` + `bridges/`（model / event-store / tool / system-prompt 四座桥） |
-| `cordis.patch.yml` | S03 的 profile patch 样例：disable stock `agent-loop` row + insert `zcode-loop` row（**必须先 disable 再 insert**，`agents.setFactory` 互斥） |
-| `scripts/smoke.mjs` | S04 端到端冒烟（真实 dsh 进程 + headless 一次任务 + fake 模型 + log 断言） |
-| `scripts/assert-facade-isolation.mjs`, `scripts/cold-start.ts` | S01 检查 |
-| `scripts/s02-integration.ts`, `scripts/s03-integration.ts` | S02/S03 桥件集成自证 |
+| `cordis.patch.yml` | profile patch 样例：disable stock `agent-loop` row + insert `zcode-loop` row（**必须先 disable 再 insert**，`agents.setFactory` 互斥） |
+| `scripts/smoke.mjs` | 端到端冒烟（真实 dsh 进程 + headless 一次任务 + fake 模型 + log 断言） |
+| `scripts/assert-facade-isolation.mjs`, `scripts/cold-start.ts` | 门面隔离检查 + 引擎冷启动自证 |
+| `scripts/projection-integration.ts`, `scripts/pipeline-integration.ts`, `scripts/source-fidelity-integration.ts`, `scripts/goal-chain-integration.ts` | 桥件集成自证：事件投影/会话重建、dsh 管线装配、user/message source 保真、goal 工具链 |
 | `reference/` | 上游快照（只读） |
 
 ## 环境与运行
@@ -34,23 +34,25 @@ dsh**（devDependency `@deepseek-ai/dsh`），替换其自带 `dsh-agent-loop`�
 ```bash
 pnpm install          # 拉取 @deepseek-ai/dsh 等（独立 npm 版 dsh）
 pnpm build            # 构建 vendored workspace + 插件 dist/
-pnpm verify           # 门面隔离 grep + S01 冷启动四事件
-pnpm verify:s02       # S02 桥件集成自证
-pnpm verify:s03       # S03 插件外壳集成自证
-pnpm verify:s04       # S04 真实 dsh 端到端冒烟（集成验收）
+pnpm verify              # 门面隔离 grep + 冷启动四事件
+pnpm verify:projection   # 事件投影与会话重建自证
+pnpm verify:pipeline     # dsh 管线/插件外壳装配自证
+pnpm verify:smoke        # 真实 dsh 端到端冒烟（集成验收）
+pnpm verify:source-fidelity # user/message source 保真 + 压缩门单元（阶段 8a）
+pnpm verify:goal-chain   # goal 工具链端到端（阶段 8b，真 goal 族插件 + mock LLM）
 ```
 
-## S04 冒烟在做什么
+## 端到端冒烟在做什么
 
-`node scripts/smoke.mjs`（= `pnpm verify:s04`）：
+`node scripts/smoke.mjs`（= `pnpm verify:smoke`）：
 
 1. **隔离环境**：`DSH_HOME=.agent-work/tmp/smoke/home`（临时物，每次全新），
    `DSH_PERMISSION_MODE=danger-full-access`、`DSH_TELEMETRY_DISABLED=1`。
-2. **打包**：esbuild 把 `dist/src`（S03 插件）与内置驱动源码各打成单文件 bundle
+2. **打包**：esbuild 把 `dist/src`（插件产物）与内置驱动源码各打成单文件 bundle
    （`@deepseek-ai/*` 保持 external —— 运行时由 dsh 的 runtime resolution 统一供给
    宿主单例），物化为 `<profile>/node_modules/dsh-plugin-zcode-loop/`。
 3. **profile**：shipped `headless` template（dsh-base + dsh-headless bundle），
-   patch 层 = S03 的 `cordis.patch.yml`（disable `agent-loop` + insert
+   patch 层 = 仓库根的 `cordis.patch.yml`（disable `agent-loop` + insert
    `zcode-loop`）+ 生成的 smoke overlay：
    - `agent-default-model` → provider/model = `mock/mock`（fake adapter）；
    - `session-title-llm` disabled（首 prompt 会偷跑 LLM）；
@@ -110,7 +112,7 @@ trace、bundle），可直接肉眼检查。
   已验证）。
 - `dsh web` 完整投影喂饱、升级 drill、golden round-trip 快照：PLAN 排除项。
 - 模型能力元数据：contextWindow / 输入模态(text) / 推理档位 / maxOutputTokens 已从
-  dsh `resolveModelInfo` 真实来源取值（取值链与断言见 `scripts/s02-integration.ts`
+  dsh `resolveModelInfo` 真实来源取值（取值链与断言见 `scripts/projection-integration.ts`
   AC5）；**video / audio / pdf 输入不支持**，image 输入因数据通路未落地被门控关闭，
   toolUpdate 机制未启用——原因与补齐路径详见 [docs/GAPS.md](docs/GAPS.md)。
 - 引擎能力层的完整桥接盘点（按模块、含量化口径与建议接入顺序）见

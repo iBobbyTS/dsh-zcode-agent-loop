@@ -1,5 +1,5 @@
 /**
- * S01 冷启动自证脚本：
+ * 冷启动自证脚本：
  * 内存 SessionEventStorePort + 脚本化假 modelFactory（纯文本、无工具）构造
  * AgentRuntime，executeTurn 跑通，eventStore 收到 TurnStarted…TurnComplete 完整序列。
  *
@@ -19,7 +19,7 @@ import {
 } from "../src/engine-facade.js";
 
 const SCRIPTED_TEXT =
-  "S01 cold start OK: the embedded ZCode AgentRuntime answered a plain-text turn.";
+  "Cold start OK: the embedded ZCode AgentRuntime answered a plain-text turn.";
 
 const EXPECTED_EVENT_SEQUENCE = [
   SessionEventType.TurnStarted,
@@ -34,7 +34,7 @@ function fail(message: string): never {
 }
 
 async function main(): Promise<void> {
-  const sessionId = createSessionId("s01-cold-start");
+  const sessionId = createSessionId("cold-start-probe");
   const eventStore = new InMemorySessionEventStore({ retention: "unbounded" });
   const workingDirectory = mkdtempSync(join(tmpdir(), "zcode-loop-cold-start-"));
 

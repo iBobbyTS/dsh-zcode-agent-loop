@@ -1,5 +1,5 @@
 /**
- * event-store-bridge — 共享边界样例 2（事件落盘）的 S02 实现。
+ * event-store-bridge — 事件落盘桥（共享边界样例 2 的实现）。
  *
  * ZCode `SessionEventStorePort` 的 dsh 实现：引擎把 ZCode `SessionEvent` 交给
  * `append()`，桥按最小翻译表写成 **合法 dsh `SessionEvent`** 并 `Session.append()`
@@ -173,7 +173,7 @@ export interface DshBridgeDropStats {
 }
 
 export interface DshEventStoreBridgeOptions {
-  /** dsh Session（唯一落盘真相）。由调用方（S03 外壳 / 测试）创建并注入。 */
+  /** dsh Session（唯一落盘真相）。由调用方（外壳 / 测试）创建并注入。 */
   session: DshSession;
   /** 期望的引擎 session id；不一致的事件按丢弃计数处理。 */
   sessionId?: SessionId;
@@ -396,7 +396,7 @@ export class DshSessionEventStoreBridge implements SessionEventStorePort {
 
   /**
    * 晚绑定 live frame publisher（agent 的 dsh AgentEventDispatch 面）。缺席时桥
-   * 只累积落盘、不发任何 frame（S02/S03 直用 bridge 的装配保持原行为）。
+   * 只累积落盘、不发任何 frame（直用 bridge 的装配保持原行为）。
    */
   setStreamPublisher(publish: (frame: AssistantStreamFrame) => void): void {
     this.streamPublisher = publish;
@@ -617,12 +617,12 @@ export class DshSessionEventStoreBridge implements SessionEventStorePort {
       return;
     }
     const step = this.step + 1;
-    // 上一缓冲（无工具的中间步）先在仍打开的上一步里落定（S04 修复：v4 关系校验
+    // 上一缓冲（无工具的中间步）先在仍打开的上一步里落定（修复：v4 关系校验
     // 要求 assistant/message 在 open step 内、step/end 收口前）。
     this.flushPendingAssistant();
     // 上一 open step 收口（其 tool/result 已全部到达）再开新步：v4 关系校验要求
     // system/user/assistant/tool 事件落在 open turn+step 内、turn/end 前无 open step。
-    // S04 修复（最小改动，报告声明）：原实现 system/user 先于 step/start、step/end
+    // 修复（最小改动，报告声明）：原实现 system/user 先于 step/start、step/end
     // 先于 assistant/tool 落盘，durable format 读取时全部拒绝。
     if (this.stepOpen) {
       this.options.session.append("step/end", { turn: this.dshTurn(turn), step: this.step });
@@ -631,11 +631,11 @@ export class DshSessionEventStoreBridge implements SessionEventStorePort {
     this.options.session.append("step/start", { turn: this.dshTurn(turn), step });
     this.stepOpen = true;
     // system prompt 只在首次请求落（原型：后续变化丢弃计数，不做 in-history 归一化）。
-    // S03 修复（最小改动，报告声明）：custom system prompt 路径下引擎会发**多条**前导
+    // 修复（最小改动，报告声明）：custom system prompt 路径下引擎会发**多条**前导
     // system 消息（cli_prefix 身份行 + stable custom body），全部都是模型可见内容；
     // 原实现只落 messages[0] 会让第二条（dsh 装配文本）绕过落盘，违反
     // "Model-visible means logged"。现在把全部前导 system 拼接为一条 dsh
-    // system/message；单条 system 的 S02 行为不变（拼接结果 === 原文）。
+    // system/message；单条 system 的旧行为不变（拼接结果 === 原文）。
     if (!this.systemMessageLogged) {
       const leadingSystemText: string[] = [];
       for (const message of payload.messages) {
@@ -848,7 +848,7 @@ export class DshSessionEventStoreBridge implements SessionEventStorePort {
   private translateModelComplete(payload: ModelCompletePayload): void {
     const turn = this.requireTurn();
     if (turn === undefined) return;
-    // S04 修复：step/end 不在此落——v4 关系校验要求 assistant/message 与其
+    // 修复：step/end 不在此落——v4 关系校验要求 assistant/message 与其
     // tool/call、tool/result 留在 open step 内，step 由下一个 model_request
     // 或 turn 收口事件负责关闭。
     // 关闭尚未 block-end 的开块，保证流结构完整。
@@ -1064,7 +1064,7 @@ export class DshSessionEventStoreBridge implements SessionEventStorePort {
     // turn 收口清理：未被本 turn 消费的 claim 批（未到 model_request）不得泄漏到下一 turn。
     this.pendingUserMessages = undefined;
     // v4 关系校验：turn/end 前不允许 open step。（错误路径若还有未解析的
-    // tool/call，durable 读取会拒绝——原型接受，见 S04 报告缺口。）
+    // tool/call，durable 读取会拒绝——原型接受，见冒烟报告缺口。）
     if (this.stepOpen) {
       this.options.session.append("step/end", { turn: this.dshTurn(turn), step: this.step });
       this.stepOpen = false;

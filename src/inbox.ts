@@ -1,5 +1,5 @@
 /**
- * inbox — S03 的最小 next-turn inbox（ReactLoopInbox 的最小重写）。
+ * inbox — 最小 next-turn inbox（ReactLoopInbox 的最小重写）。
  *
  * npm `@deepseek-ai/dsh-agent-loop` 不导出 `ReactLoopInbox`（其包导出面只有
  * AgentLoop/投影定义等），按任务合同的 fallback 走最小重写：
@@ -14,7 +14,7 @@
  * - 事件：落盘不变；stock 的 agent/inbox/* live 词表（inserted/claimed/
  *   discarded）经构造期注入的 `emitLive` 回调补齐（阶段 6，UI 队列气泡实时
  *   显示；emit 只传实际 payload，agent 字段由 Scoped dispatch 收窄）——回调
- *   缺席时静默跳过（S03 脚本等无派发面的路径）。
+ *   缺席时静默跳过（回归脚本等无派发面的路径）。
  */
 import type { ContentBlock, MessageId, UserMessage } from "@deepseek-ai/dsh-llm";
 import type { Inbox, InboxState, InboxTarget } from "@deepseek-ai/dsh-agent";

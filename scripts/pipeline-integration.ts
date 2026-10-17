@@ -1,5 +1,5 @@
 /**
- * S03 集成自证脚本（AC 1–3 + 不变量 probe）：
+ * dsh 管线装配集成自证脚本（AC 1–3 + 不变量 probe）：
  *
  * 装配：`new Context()`（npm cordis）+ 标准前置服务（LlmRuntime/SessionStore/
  * SystemPrompt/ToolRuntime/AgentRegistry，挂载序照抄 reference testkit 的
@@ -33,7 +33,7 @@ import ToolRuntime, { defineTool } from "@deepseek-ai/dsh-tools";
 import ZcodeLoop from "../src/index.js";
 
 // ------------------------------------------------------------------
-// fake llm adapter（照抄 S02 / reference mock-adapter 写法）
+// fake llm adapter（照抄 reference mock-adapter 写法）
 // ------------------------------------------------------------------
 
 class ScriptedAdapter extends LlmAdapter {
@@ -98,7 +98,7 @@ function textChunks(text: string): StreamChunk[] {
 // ------------------------------------------------------------------
 
 function fail(message: string): never {
-  console.error(`[s03] FAIL: ${message}`);
+  console.error(`[pipeline] FAIL: ${message}`);
   process.exit(1);
 }
 
@@ -116,13 +116,13 @@ async function main(): Promise<void> {
   await ctx.plugin(AgentRegistry);
 
   const adapter = new ScriptedAdapter([
-    textThenToolCallChunks("Calling the echo tool.", "call-s03-1", "echo_dsh_tool", { text: "s03" }),
-    textChunks("S03 tool says: s03"),
+    textThenToolCallChunks("Calling the echo tool.", "call-pipeline-1", "echo_dsh_tool", { text: "pipeline" }),
+    textChunks("Pipeline tool says: pipeline"),
   ]);
   ctx.llm.registerAdapter(["mock"], adapter);
 
   // ---- dsh 工具（dsh 工具插件的注册面：defineTool + ctx.tools.register）----
-  // npm 上全部 dsh-tool-* 插件钉死 0.0.1-rc.1 坏代际（peer 404，见 S02 §2），
+  // npm 上全部 dsh-tool-* 插件钉死 0.0.1-rc.1 坏代际（peer 404，见早期任务报告（已归档）），
   // 无法与 0.2.1-alpha.5 共装；以同一注册面落一个工具即"dsh 自带工具"的最小等价，
   // 管线证明由 pre-execute probe 承担（HANDOFF 声明该偏差）。
   const dshToolExecutions: unknown[] = [];
@@ -153,7 +153,7 @@ async function main(): Promise<void> {
   // ---- 本插件（不装 stock agent-loop）----
   await ctx.plugin(ZcodeLoop, { provider: "mock", model: "mock" });
 
-  const sessionId = DshSessionId("s03-zcode-loop");
+  const sessionId = DshSessionId("pipeline-zcode-loop");
   const handle = await ctx.agents.create({
     sessionId,
     agentOptions: { provider: "mock", model: "mock" },
@@ -173,13 +173,13 @@ async function main(): Promise<void> {
   assert(agent.status === "idle", `agent must return to idle, got ${agent.status}`);
   assert(dshToolExecutions.length === 1, `expected exactly one dsh tool execution, got ${dshToolExecutions.length}`);
   assert(
-    (dshToolExecutions[0] as { text?: string })?.text === "s03",
+    (dshToolExecutions[0] as { text?: string })?.text === "pipeline",
     `unexpected tool arguments: ${JSON.stringify(dshToolExecutions[0])}`,
   );
   assert(preExecuteCount >= 1, `tools/pre-execute listener must fire (>=1), got ${preExecuteCount}`);
   assert(adapter.requests.length === 2, `expected 2 provider calls, got ${adapter.requests.length}`);
   console.log(
-    `[s03] AC2 turn completed: dsh tool executions=${String(dshToolExecutions.length)}, pre-execute probe=${String(preExecuteCount)}, provider calls=${String(adapter.requests.length)}`,
+    `[pipeline] AC2 turn completed: dsh tool executions=${String(dshToolExecutions.length)}, pre-execute probe=${String(preExecuteCount)}, provider calls=${String(adapter.requests.length)}`,
   );
 
   // 模型请求确实带上了经桥同步的 dsh 工具 schema（工具面=dsh）。
@@ -195,7 +195,7 @@ async function main(): Promise<void> {
   const session = agent.session;
   const log = session.snapshotEvents();
   const logTypes = log.map((event) => event.type);
-  console.log(`[s03] dsh log sequence: ${logTypes.join(" -> ")}`);
+  console.log(`[pipeline] dsh log sequence: ${logTypes.join(" -> ")}`);
   // inbox splice（insert+claim）先于 turn 事件是 stock 同款时序：turn 骨架断言
   // 跳过 inbox 事件。
   const turnLogTypes = logTypes.filter((type) => type !== "agent/inbox/spliced");
@@ -205,13 +205,13 @@ async function main(): Promise<void> {
 
   const derived = session.deriveMessages();
   const roles = derived.map((message) => message.role);
-  console.log(`[s03] derived roles: ${roles.join(" -> ")}`);
+  console.log(`[pipeline] derived roles: ${roles.join(" -> ")}`);
   assert(roles[0] === "system", `derived must open with system, got ${roles[0] ?? "<empty>"}`);
   assert(roles.includes("user") && roles.includes("assistant") && roles.includes("tool"), "derived must rebuild the full backbone");
 
   // system prompt 是 dsh SystemPrompt.assemble() 的产物（harness identity 段在场）。
   // 引擎在 custom prompt 路径仍无条件保留自身 cli_prefix 身份行（"You are
-  // ZCode..."，无配置门可关）；S02 桥已修复为把全部前导 system 拼成一条
+  // ZCode..."，无配置门可关）；桥已修复为把全部前导 system 拼成一条
   // dsh system/message（模型可见即落盘），因此 derived 的 system 文本应同时
   // 含引擎身份行与 dsh 装配文本。
   const systemMessages = derived.filter((message) => message.role === "system");
@@ -254,18 +254,18 @@ async function main(): Promise<void> {
     .filter((block) => block.type === "text")
     .map((block) => (block.type === "text" ? block.text : ""))
     .join("");
-  assert(finalText === "S03 tool says: s03", `final assistant text mismatch: ${JSON.stringify(finalText)}`);
+  assert(finalText === "Pipeline tool says: pipeline", `final assistant text mismatch: ${JSON.stringify(finalText)}`);
   const assistantEvents = log.filter((event) => event.type === "assistant/message");
   for (const event of assistantEvents) {
     if (event.type !== "assistant/message") continue;
     expandAssistantStream(event.data.stream);
   }
-  console.log(`[s03] AC3 deriveMessages rebuilt: ${String(derived.length)} messages, final=${JSON.stringify(finalText)}`);
+  console.log(`[pipeline] AC3 deriveMessages rebuilt: ${String(derived.length)} messages, final=${JSON.stringify(finalText)}`);
 
   // ---- 附加 probe：inbox splice 落盘（唯一真相）----
   const inboxSplices = log.filter((event) => event.type === "agent/inbox/spliced");
   assert(inboxSplices.length >= 2, `inbox splices must be durable (>=2: insert + claim), got ${String(inboxSplices.length)}`);
-  console.log(`[s03] inbox splices durable: ${String(inboxSplices.length)}`);
+  console.log(`[pipeline] inbox splices durable: ${String(inboxSplices.length)}`);
 
   // ---- 附加 probe：resume 走真实冷恢复路径（本测试 ctx 无 persistence，按 stock
   // 文案拒绝；阶段 3 起 resume 不再是 PROTOTYPE_UNSUPPORTED）----
@@ -279,10 +279,10 @@ async function main(): Promise<void> {
     resumeError instanceof Error && resumeError.message.includes("session persistence is not configured"),
     `resume without persistence must fail with stock wording, got ${String(resumeError)}`,
   );
-  console.log("[s03] resume probe: persistence guard surfaced");
+  console.log("[pipeline] resume probe: persistence guard surfaced");
 
   await handle.dispose();
-  console.log("[s03] PASS: AC2/AC3 + pipeline/system-prompt/inbox/resume probes all green");
+  console.log("[pipeline] PASS: AC2/AC3 + pipeline/system-prompt/inbox/resume probes all green");
   process.exit(0);
 }
 

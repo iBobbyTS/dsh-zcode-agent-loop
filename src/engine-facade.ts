@@ -1,12 +1,12 @@
 /**
- * engine-facade.ts — 全仓唯一允许 import `@zcode/*` 的文件（S01 不变量）。
+ * engine-facade.ts — 全仓唯一允许 import `@zcode/*` 的文件（门面隔离不变量）。
  *
- * S02 的桥与 S03 的 dsh 外壳只经这里消费 vendored ZCode 引擎，不得直接 import
+ * 桥与 dsh 外壳只经这里消费 vendored ZCode 引擎，不得直接 import
  * `@zcode/core` / `@zcode/contracts`。`scripts/assert-facade-isolation.mjs` 用 grep
  * 断言这一约束。
  *
  * 本文件刻意保持"最小门面"：
- * - 重新导出 S02/S03 需要的引擎值与类型；
+ * - 重新导出桥与外壳需要的引擎值与类型；
  * - 提供脱离 ZCode bootstrap 的最小构造件：内存事件 store、脚本化假模型工厂、
  *   最小 config/deps 装配（对照上游 `apps/zcode-cli/packages/core/tests` 的
  *   test-agent-runtime / test-runtime-model 写法，照结构不照语义）。
@@ -134,7 +134,7 @@ export type {
   UserMessageInfo,
 };
 
-/** 引擎期望的模型工厂；S02 的 model-bridge 以它为接缝。 */
+/** 引擎期望的模型工厂；model-bridge 以它为接缝。 */
 export type RuntimeModelFactory = AgentRuntimeDeps["modelFactory"];
 
 // ------------------------------------------------------------------
@@ -237,7 +237,7 @@ export function createScriptedModelFactory(
 export interface CreateEmbeddedEngineInput {
   sessionId: SessionId;
   eventStore: SessionEventStorePort;
-  /** 缺省用脚本化纯文本假模型；S02 起替换为经 dsh llm 路由的真模型工厂。 */
+  /** 缺省用脚本化纯文本假模型；运行时替换为经 dsh llm 路由的真模型工厂。 */
   modelFactory?: RuntimeModelFactory;
   workingDirectory?: string;
   config?: AgentRuntimeConfig;
@@ -271,7 +271,7 @@ export function createEmbeddedEngine(input: CreateEmbeddedEngineInput): AgentRun
 }
 
 /**
- * S03 直通 permission broker：一切请求放行（decision "allow"）。
+ * 直通 permission broker：一切请求放行（decision "allow"）。
  * 把关责任交给 dsh 工具管线（tools/pre-execute waterfall 等）——桥接工具的
  * `needsApproval:false` 元数据使引擎不发起权限交互，本 broker 只是引擎面的
  * 显式 allow 直通，不做任何决策。

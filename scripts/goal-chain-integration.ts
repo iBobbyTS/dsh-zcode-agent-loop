@@ -1,6 +1,6 @@
 /**
- * S06 集成脚本：dsh goal 工具链（create/update_goal + goal-round-driver 自动
- * 续轮 + todo_write）经桥的端到端验收——host 版（tsx 直跑 src，秒级迭代）。
+ * goal 工具链集成自证脚本（阶段 8b host 回归）：create/update_goal +
+ * goal-round-driver 自动续轮 + todo_write 经桥的端到端验收——tsx 直跑 src。
  *
  * 阶段 8b 的容器 probe（.agent-work/tmp/stage8-goal/goal-probe.mjs，真插件 +
  * mock adapter）验证过同一套断言；勘误后确认 goal 族 0.2.1-alpha.5 在 npm 可
@@ -49,7 +49,7 @@ import * as ToolTodo from "@deepseek-ai/dsh-tool-todo";
 import ZcodeLoop from "../src/index.js";
 
 function fail(message: string): never {
-  console.error(`[s06] FAIL: ${message}`);
+  console.error(`[goal-chain] FAIL: ${message}`);
   process.exit(1);
 }
 
@@ -110,7 +110,7 @@ class GoalAdapter extends LlmAdapter {
     const n = this.requests.length;
     if (n === 1) {
       yield* response("好的：先创建目标并写入任务清单。", [
-        { callId: "call-goal-create", name: "create_goal", args: { objective: "完成S06验收", max_goal_rounds: 3 } },
+        { callId: "call-goal-create", name: "create_goal", args: { objective: "完成goal-chain验收", max_goal_rounds: 3 } },
         {
           callId: "call-todo-1",
           name: "todo_write",
@@ -196,7 +196,7 @@ async function main(): Promise<void> {
   const adapter = new GoalAdapter();
   ctx.llm.registerAdapter(["mock"], adapter);
 
-  const sessionId = DshSessionId("s6-goal-probe");
+  const sessionId = DshSessionId("goal-chain-probe");
   const handle = await ctx.agents.create({
     sessionId,
     agentOptions: { provider: "mock", model: "mock" },
@@ -222,12 +222,12 @@ async function main(): Promise<void> {
   const goal = goals.get(agent);
   assert(goal !== undefined, "goal must exist after create_goal");
   assert(goal.phase === "complete", `goal phase must be complete, got ${goal?.phase}`);
-  console.log(`[s06] 断言1 ✓ 4 请求（人类轮 2 + goal 轮 2），goal ${goal.id} phase=complete`);
+  console.log(`[goal-chain] 断言1 ✓ 4 请求（人类轮 2 + goal 轮 2），goal ${goal.id} phase=complete`);
 
   // ---- 断言 2：goal 轮请求携带 <goal_round> ----
   const round2Json = JSON.stringify(adapter.requests[2]!.messages ?? []);
   assert(round2Json.includes("<goal_round>"), `round-2 request must carry goal_round prompt, got: ${round2Json.slice(0, 400)}`);
-  console.log("[s06] 断言2 ✓ goal 轮请求携带 <goal_round> 续轮提示");
+  console.log("[goal-chain] 断言2 ✓ goal 轮请求携带 <goal_round> 续轮提示");
 
   // ---- 断言 3：surface source 保真 ----
   const events = agent.session.snapshotEvents();
@@ -242,13 +242,13 @@ async function main(): Promise<void> {
   assert(goalSource.goalId === goal.id, `goal source goalId mismatch: ${goalSource.goalId} vs ${goal.id}`);
   assert(goalSource.round === 1, `goal source round must be 1, got ${goalSource.round}`);
   assert(Number.isInteger(goalSource.revision) && goalSource.revision >= 1, `goal source revision invalid: ${goalSource.revision}`);
-  console.log(`[s06] 断言3 ✓ 人类轮 source=user；goal 轮 source=goal{goalId, revision=${goalSource.revision}, round=1}`);
+  console.log(`[goal-chain] 断言3 ✓ 人类轮 source=user；goal 轮 source=goal{goalId, revision=${goalSource.revision}, round=1}`);
 
   // ---- 断言 4：goal 工具零 authority 拒绝 ----
   const toolEventsJson = JSON.stringify(events.filter((event) => event.type.startsWith("tool/")));
   assert(!toolEventsJson.includes("GOAL_TOOL_"), `goal tools rejected by authority checks: ${toolEventsJson.slice(0, 800)}`);
   assert(toolEventsJson.includes(goal.id), "create_goal result must reach the durable surface");
-  console.log("[s06] 断言4 ✓ create_goal/update_goal 无 GOAL_TOOL_* 拒绝，结果落 surface");
+  console.log("[goal-chain] 断言4 ✓ create_goal/update_goal 无 GOAL_TOOL_* 拒绝，结果落 surface");
 
   // ---- 断言 5：turn 计数 + todo ----
   const turnStarts = events.filter((event) => event.type === "turn/start");
@@ -260,9 +260,9 @@ async function main(): Promise<void> {
     Array.isArray(todos) && todos.length === 2 && todos[0]!.content === "创建目标",
     `todo list mismatch: ${JSON.stringify(todos)}`,
   );
-  console.log("[s06] 断言5 ✓ turn/start ×2；todo/write 落盘 2 项清单");
+  console.log("[goal-chain] 断言5 ✓ turn/start ×2；todo/write 落盘 2 项清单");
 
-  console.log("[s06] PASS: goal 续轮 + todo_write + source 保真 + authority 全部断言绿");
+  console.log("[goal-chain] PASS: goal 续轮 + todo_write + source 保真 + authority 全部断言绿");
   clearTimeout(watchdog);
   process.exit(0);
 }
