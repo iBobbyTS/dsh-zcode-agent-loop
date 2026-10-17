@@ -28,7 +28,9 @@
     "verify:source-fidelity": "tsx scripts/source-fidelity-integration.ts",
     "verify:goal-chain": "tsx scripts/goal-chain-integration.ts",
     "verify:matrix": "tsx scripts/verify-matrix.ts",
-    "verify:contracts:selftest": "tsx scripts/contract-verification/selftest.ts"
+    "verify:contracts:selftest": "tsx scripts/contract-verification/selftest.ts",
+    "verify:classify": "tsx scripts/contract-verification/classify.ts",
+    "verify:classify:selftest": "tsx scripts/contract-verification/classify-selftest.ts"
   },
   "dependencies": {
     "@zcode/contracts": "workspace:*",
