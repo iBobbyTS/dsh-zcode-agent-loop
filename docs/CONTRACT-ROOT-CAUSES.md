@@ -1,28 +1,57 @@
-# Original 289 contract differences
+# Current contract status and historical evidence
 
-The original npm stock differential is fully assigned: **289 raw members, 13 root groups, 67 intentional, 131 noise, 91 bridge-gap, 0 unknown**. These are raw field counts, not a count of independent missing features. Classification does not establish equivalence: the matrix remains FAIL with its existing empty allowance list.
-
-Authority is installed `@deepseek-ai/dsh@0.2.1-alpha.5`, its same-version stock loop and the actual installed session, LLM, tool and projection consumers. The ZCode `src/` bridge is the other producer; vendored ZCode is cited only for its engine buffering behavior. Reference sources do not substitute for installed stock.
-
-## Run and inspect
+`pnpm verify:contracts` is the actionable current gate: it runs each stock/ZCode capture once, validates the installed pinned authority, classifies exact semantic peers, and writes standalone HTML/Markdown plus full raw values. The 2026-10-17 current capture has **292 raw differences, 7 groups, 134 intentional, 158 noise, 0 bridge-gap, 0 unknown**. Its bounded semantic result is **PASS**, while the unchanged raw matrix remains **FAIL** with zero allowances and coverage remains **partial**. Future runs compute their own counts.
 
 ```sh
-# Current runtime report (run verify:matrix first; its differential exit 1 is expected).
-pnpm verify:classify
-pnpm verify:classify --input .agent-work/tmp/contract-verification/report.json --out /tmp/current-contract-classification
-# Original frozen input available in this work session.
-pnpm verify:classify --input .agent-work/tmp/contract-classification/baseline-289.json
+pnpm verify:contracts
+pnpm verify:contracts --out /tmp/current-contract-status
+pnpm verify:contracts --strict-coverage
 pnpm verify:classify:selftest
+pnpm verify:contracts:status-selftest
 pnpm typecheck
 ```
 
-Default input is `.agent-work/tmp/contract-verification/report.json`; default output is `.agent-work/tmp/contract-classification/report/`. Open `index.html` in a browser: totals, root groups, scoped registration set differences, source citations/hashes, aligned semantic facts and every raw member are available without a build or network dependency. `classification.json`, `report.md` and `raw-differences.json` are companion artifacts. HTML source/content and Markdown angle brackets are escaped.
+The default deliverable is `.agent-work/tmp/contract-classification/report/index.html`. Companion files are `report.md`, `classification.json`, `raw-differences.json`, `check.json`, `matrix/report.json` (complete fresh captures) and `original/` (all historical groups, source citations and 289 raw members). No report build or network dependency is needed. Content is escaped. `verify:classify --input PATH --out DIR` remains available for inspecting saved captures; it does not run scenarios or certify coverage.
 
-Exit **0** means all current differences have an evidenced assignment, including real gaps. Exit **1** means unknown differences or invalid/mismatched input. Package versions/hashes must match the installed pinned authority. Raw differences are recomputed and compared with the input, so a stale difference list fails. Neither a classification success nor fixture assertions approve production allowances.
+The combined command exits **0** only for all three valid executed scenarios and no detected real/unknown semantic gap; **1** for capture/fixture failure, authority mismatch, known gap, unknown or invalid input; **2** when those semantic checks pass but `--strict-coverage` rejects partial coverage. A failure replaces the current HTML with an explicit failure report. The classifier alone also exits 1 for known gaps or unknowns. Raw differences are recomputed, stale lists rejected, and no production allowance is added.
 
-The durable [original ledger](CONTRACT-ORIGINAL-289.json) retains every original member's scenario, pointer, kind, normalized stock/ZCode values, full-difference SHA256 and primary root, plus root source citations/hashes. It is about 100 KB rather than the full 420 KB runtime report. Its baseline SHA256 is **2b28b0ee92eb772f30a24c4012b25655df30d5ed1ebb7e88de25fefa5e5d3fac** (the JSON's `baseline.sha256` is authoritative). Original membership is immutable evidence; rerunning the classifier on current captures writes separate generated reports and does not update this ledger. `--ledger NEW_PATH` creates a ledger exclusively and refuses an existing path.
+## Current repairs, separately from original membership
 
-## Root ledger
+All seven original gap roots use existing dsh host contracts. No new host plugin was required. Tests below assert real consumer behavior; recorded browser checks were accepted by the parent in each stage, not rerun by the report generator.
+
+| Original gap root | Code commit | Meaningful test | Bounded prior browser evidence |
+| --- | --- | --- | --- |
+| inbox-projection | `95f56d9` | `scripts/inbox-projection-integration.ts`: public registry/state/wire, invalid history, JSONL cold resume, exactly-once consumption | Queue B while A streams, refresh, two ordered turns; original sources and one insertion correlated via JSONL. `.agent-work/tmp/inbox-projection/browser-summary.json`. |
+| request-tools | `60cf2fa` | `scripts/request-provenance-integration.ts`: actual prepared dispatch equals persisted admitted tool/config snapshot before response | Standard glm-5.3-flash Request view and JSONL: 31 tools, actual route/options. `.agent-work/tmp/request-provenance-browser-summary.json`. |
+| request-context | `60cf2fa` | Same test: effective context/defaults, omission, both streaming paths, replay | Same browser session: context usage and contextWindow 1000000 correlated. |
+| request-header-policy | `60cf2fa` | Same test: equality, change/series/resume, additions/removals, rejection/accepted turn number and stock comparison | Same session: 2 requests with one initial header. |
+| assistant-tool-surface | `bded5a4` | `scripts/tool-surface-context-integration.ts`: complete paired calls before journals, during-stream/nonstream and replay | Paired goal/todo cards followed assistant without orphan rows. `.agent-work/tmp/tool-fidelity-browser.txt`. |
+| stream-finish | `bded5a4` | Same test: installed BlockAssembler, one stop/tool-calls/length finish, usage/live/end sequence | Same browser flow finished 2 turns / 5 steps; terminal reason is established by focused consumer tests. |
+| goal-deferred-context | `bded5a4` | Same test plus `scripts/goal-chain-integration.ts`: original notice/source in actual following request, success/error/owner isolation | Automatic goal round, completion notice after result, Request 5 GOAL_WRAPUP_VERIFIED. Same browser evidence. |
+
+Parent acceptance records are `.agent-work/archive/20261017-1259_inbox-projection/PLAN.md`, `20261017-1253_request-provenance/PLAN.md`, and `20261017-1244_tool-surface-context/PLAN.md`. The generated report includes these paths and evidence summaries for each root. Absence of a current classified gap is bounded to executed scenarios; it does not replace those consumer regressions.
+
+An additional live-preset issue, **agent-scoped tool visibility**, was discovered outside the original289 membership. Commit `32c231a` resolves explicit agent scope for schemas/metadata and refreshes the existing engine tool cache. `scripts/preset-tools-integration.ts` checks first request, real handler/initiator, global controls, sibling isolation and add/remove across turns. Parent browser acceptance saw goal/todo operations complete and TOOL_CHAIN_SCOPE_OK; screenshot `.agent-work/tmp/contract-classification/browser-tool-scope-after.png`, record `.agent-work/archive/20261017-1237_preset-tool-scope/PLAN.md`. This does not add historical members.
+
+## Narrow newly exposed rules
+
+**mock-token-budget (intentional):** only stock config exactly `{model: "mock", provider: "mock"}` versus that exact config plus ZCode `maxTokens: 32000` qualifies. The existing engine default is produced at `vendor/zcode/apps/zcode-cli/packages/core/src/runtime/methods/model-token-limits.ts:5`; `src/bridges/model-bridge.ts:415` maps it to the provider request, and the prepared-request hook persists it. Another budget, route or unknown config field remains unknown. The cap difference remains visible; budgets are not changed to make the report green.
+
+**header-tool-order (noise):** only request/header tool arrays with unique string names and identical complete schemas by name qualify. `src/bridges/tool-bridge.ts:151` enumerates the owner-scoped tools, the engine admits its order, and `src/bridges/event-store-bridge.ts:723` persists the actual admitted request. Current source file/line/hash anchors for both new rules are emitted at report time. Changed/extra fields, duplicate names, missing tools and schema changes remain unknown even under existing positional differences. No tool order is changed by classification.
+
+Unknown semantic fields always win over positional explanations. The status selftest mutates these actual current captures, removes context/projection/multi-tool/finish/deferred notice, verifies unknowns survive order changes, and checks one collector call, capture/authority failure and strict exit behavior. Original negative tests remain active.
+
+## Coverage limits
+
+The shared mock fixture exercises only basic-text, todo-tool and goal-round. Unexercised profile families and static obligations remain partial; no report PASS means full engine or full profile parity. Claimed-turn admission is not complete per-model-step host middleware parity. Synchronization of externally compacted/replaced host history into the embedded engine, broad compact/side paths, rewind/checkpoint/rollback/memory and other deployed plugin families remain unproved.
+
+## Historical authority and immutability
+
+The [original ledger](CONTRACT-ORIGINAL-289.json) remains byte-identical: **289 raw members, 13 roots, 67 intentional, 131 noise, 91 bridge-gap, 0 unknown**. Ledger SHA256 is `cf4aa78fb0cb00c95f0743c1a57aa0fc9179fdc8a4ff962478839efbd394c63b`; baseline full-capture SHA256 is `2b28b0ee92eb772f30a24c4012b25655df30d5ed1ebb7e88de25fefa5e5d3fac`, from baseline commit `1a3bd84`. Member hashes, original file/line/source-hash triples and categories are historical evidence, not current unresolved-gap counts. A deterministic compressed mock capture is retained at `scripts/contract-verification/fixtures/original-289.json.gz` for reproducible original membership and negative selftests.
+
+Authority is installed `@deepseek-ai/dsh@0.2.1-alpha.5`, its same-version loop and installed session/LLM/tool/projection consumers, never `reference/`. New current rules cite current sources; original citations stay attached to saved historical hashes. `--ledger NEW_PATH` still creates a separate ledger exclusively and refuses an existing path.
+
+## Historical original 289 ledger
 
 | Root | Category | Raw members | Scenarios | Material effect / route |
 | --- | --- | ---: | --- | --- |
@@ -44,7 +73,7 @@ Every group in the generated report includes producer **and** consumer file/line
 
 ## Evidence and delivery ownership
 
-The failure sites below describe the frozen original capture. Current tool-exchange repair status is recorded separately below; the original member counts and immutable ledger are unchanged.
+All file/line references below describe the historical baseline **1a3bd84**, with the saved per-file SHA256 in each original ledger root. They are not current repaired file locations. The classifier reuses those saved triples without hashing repaired source against old line numbers.
 
 - **Factory identity:** `src/index.ts:265` registers `zcodeLoop` and the agents factory. Installed `@deepseek-ai/dsh-agent/lib/index.js:429` consumes `setFactory`. Compare actual `ready` and `complete` service **sets**, not each sorted position.
 - **Inbox registration:** installed `@deepseek-ai/dsh-agent-loop/lib/index.js:26` defines the inbox fold and `:1583` registers it; installed `@deepseek-ai/dsh-session-projection/lib/index.js:126` reads state and `:138` exposes registered wire views. `src/inbox.ts:7` describes private folding and `src/index.ts:278` registers only turnBoundary. The existing projection framework owns this seam; a new plugin is unnecessary unless extraction is later chosen for reuse.
@@ -64,32 +93,4 @@ The raw order is still behavior: ZCode claims next-turn inbox before `turn/start
 
 The scripted goal adapter chooses its closing answer by request count (`scripts/contract-verification/fixture.ts:113`), so passing the fixture does not establish that the model received the missing closing instruction. New tests for later repairs must assert that actual request input and durable source, not only the resulting answer.
 
-No original member establishes a rewind/checkpoint/rollback/memory gap or requires a new dsh plugin. Those broader capabilities remain outside these three fixtures. No runtime repair, production allowance, fixture change or equivalence approval is part of this classification stage.
-
-## Tool-exchange repair status
-
-The bridge now retains all streamed call identities/names/arguments and stages dependent tool journals until the complete assistant can be committed. Non-streaming responses collect the expected scheduled-call count before committing. This also handles during-stream execution, where scheduled calls and results can precede `model_complete`. Every dependent `tool/call` follows the assistant surface containing its call block; replay retains the pairings.
-
-Engine streaming finish events omit the stop reason, so the bridge finalizes once using `model_complete.stopReason`. The persisted compact stream and live frames receive the same terminal chunk, after usage, and the live end references the committed assistant sequence. Stop, tool-calls and length/max-tokens are checked through the installed `BlockAssembler`, not by inspecting an internal flag.
-
-Tool execution now stages the original `additionalContexts` messages on the owning agent, including error results. After the matching durable `tool/result`, the agent records next-step inbox insertion/claim, submits an awaited guide through the existing runtime queue, and appends each original `user/message`. Selective synchronous claim prevents ordinary steering from consuming the same deferred messages during the await. The following real adapter request is checked for the instruction exactly once. This is transient result staging plus the existing durable inbox/session contracts; it adds no plugin or scheduler.
-
-`pnpm verify:tool-surface-context` covers streaming/non-streaming single and paired calls, during-stream result ordering, session replay, terminal assembly/live completion, usage, success/error deferred instructions and concurrent owner/sibling isolation with reused call IDs. Targeted probes against the pre-repair bridge fail for missing terminal chunks and premature tool journaling; the pre-repair tool bridge fails deferred-notice delivery. `pnpm verify:goal-chain` additionally asserts the actual goal-round completion notice's `tool-goal` source and `notice` form, its ordering after the result and its text in the actual closing request. Typecheck, pipeline and source-fidelity checks pass. Real browser acceptance remains a separate parent delivery check. Request header/context policy and inbox projection registration remain outside this repair; the core differential is still expected to be red, with no new allowances or equivalence claim.
-
-## Additional live-preset gap: agent-scoped tool visibility
-
-The real Standard-preset web check exposed a separate gap absent from the original global-tool fixtures: the model saw only the globally registered `working_directory`, despite preset tools being registered in its agent scope. This does not change the original289 ledger or any of its classifications.
-
-In the pinned dsh runtime, `tools.register()` derives ownership from its calling context, while `tools.schemas(scope)` and `tools.get(name, scope)` require an explicit agent key. Calling `agent.ctx.tools.schemas()` without that argument still returns the global view. The bridge now resolves its owning agent lazily and supplies the same scope key for schemas, definition metadata and execution. The existing per-turn registry synchronization also invalidates the engine's tool-contract cache so additions/removals reach the next model request.
-
-`pnpm verify:preset-tools` registers a tool through a real `agent.ctx` after creation/enter. Before the repair, its first provider request omitted that scoped tool while the global control remained present. After repair, it verifies the first request, handler execution through a scoped dsh pipeline listener, matching agent/initiator, scoped concurrency metadata, sibling/root isolation, and scoped add/remove across later turns. `pnpm typecheck`, `pnpm verify:goal-chain` and `pnpm verify:pipeline` also pass. Real web/preset acceptance is a separate delivery check; these results do not establish deferred-context, multi-tool assistant-surface, finish, request-header or inbox fidelity.
-
-## Request-provenance repair status
-
-The request-tools, request-context and request-header-policy roots now use the existing host contracts at the prepared-call seam. Both streaming and generateText paths notify the event bridge after defaults have been materialized and before provider dispatch. The bridge records the exact engine-admitted tool schemas, `prepared.config`, canonical `adapterDefaults`, and registration-bound context metadata. Session folding and replay consume these snapshots directly. Optional metadata stays absent when the prepared route does not declare it.
-
-Header admission uses installed `canonicalHeader` / `headerEquals`, the folded baseline, and surface content generation: unchanged same-series steps and ordinary later turns inherit the snapshot; the first request over persisted headers uses `resume`; envelope changes use `change`; explicit or surface-driven series boundaries use `series` or retain `startsSeries` on a simultaneous change. Added/removed tools produce the stock developer-message records, including the header sequence needed to resolve additions. The existing `agent/pre-step` waterfall is now invoked narrowly at claimed-turn admission to preserve its transformed messages, rejection and explicit series marker (used by goal-round-driver). Rejection does not consume the next engine turn number. This is not a complete per-step host loop or synchronization with host compaction.
-
-`pnpm verify:request-provenance` checks actual installed-plugin/mock-adapter requests before response chunks, in both streaming modes, against persisted config/tools/context; scoped tool add/remove, declaration references, deduplication, ordinary later turns, message transformation/rejection/series markers and replay are covered. A direct model-bridge probe checks resumed baseline, surface replacement, simultaneous change/series, optional metadata removal and a compact sidecar while main admission is pending. Installed stock differential captures of all three scenarios check the folded schema set/context and exact header reason/series policy. Typecheck, pipeline, goal-chain, source-fidelity, preset-tools and tool-surface-context also pass.
-
-Full byte-equivalence remains unclaimed. The newly truthful snapshots expose existing model behavior: the engine sends explicit `maxTokens: 32000` in the shared matrix fixture where stock omits it, and its admitted tool order differs. The focused differential asserts that exact token difference and compares schema sets by name without changing production order or the matrix oracle. Current matrix output is still FAIL: 49 basic-text, 66 todo-tool and 198 goal-round raw differences (313 total). The unchanged classifier reports 52 unknown members; these are newly exposed config/tool-order comparisons, not permission to add allowances. Missing inbox projection and existing order/identity differences remain outside this repair. The original289 ledger, classifier and allowance list are unchanged. Real web Request-view acceptance is a separate parent delivery check.
+No original member establishes a rewind/checkpoint/rollback/memory gap or requires a new dsh plugin. Those broader capabilities remain outside these three fixtures. The original classification stage made no runtime repair or allowance changes; later repair evidence is recorded above.

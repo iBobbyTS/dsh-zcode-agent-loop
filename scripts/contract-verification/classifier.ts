@@ -3,7 +3,7 @@ import { dirname, join, resolve } from 'node:path';
 import { diff, hash, packageFile, type Difference } from './oracle.js';
 
 export type Classification = 'intentional' | 'noise' | 'bridge-gap' | 'unknown';
-interface Citation { file: string; line: number; sha256: string; role: 'producer' | 'consumer' }
+interface Citation { file: string; line: number; sha256: string; role: 'producer' | 'consumer'; snapshot?: string }
 interface Root { id: string; classification: Classification; explanation: string; effect: string; route?: 'dsh-built-in' | 'new-plugin'; owner?: string; sources: Citation[] }
 interface Event { type: string; seq: number; data: Record<string, any>; [key: string]: any }
 export interface Capture { events: Event[]; ready: Record<string, string[]>; complete: Record<string, string[]>; projections: Record<string, any>; [key: string]: any }
@@ -20,25 +20,33 @@ function citation(file: string, line: number, role: Citation['role']): Citation 
 function root(id: string, classification: Classification, explanation: string, effect: string, producer: [string,number], consumer: [string,number], owner?: string): Root {
  return {id,classification,explanation,effect,...(owner?{route:'dsh-built-in' as const,owner}:{}),sources:[citation(...producer,'producer'),citation(...consumer,'consumer')]};
 }
+export const historicalLedgerPath = 'docs/CONTRACT-ORIGINAL-289.json';
+export const historicalLedgerHash = 'cf4aa78fb0cb00c95f0743c1a57aa0fc9179fdc8a4ff962478839efbd394c63b';
+export function historicalLedger() {
+ const bytes=readFileSync(resolve(historicalLedgerPath),'utf8');
+ if(hash(bytes)!==historicalLedgerHash)throw new Error('original 289 ledger changed');
+ return JSON.parse(bytes) as {baseline: {input:string;sha256:string;stockVersion:string};counts: ReturnType<typeof classify>['counts'];roots: (Root & {count:number;scenarios:string[];samples:string[];scenarioCounts:Record<string,number>})[];members: Member[]};
+}
 export function roots(): Root[] {
- const loop='@deepseek-ai/dsh-agent-loop/lib/index.js', session='@deepseek-ai/dsh-session/lib/index.js', bridge='src/bridges/event-store-bridge.ts';
- return [
- root('service-name','intentional','The scoped set difference is exactly agentLoop → zcodeLoop. Sorted-array positions amplify one implementation service substitution.','Agents uses the registered factory; shared services remain present. No missing agents/llm/tools service is implied.', ['src/index.ts',265],['@deepseek-ai/dsh-agent/lib/index.js',429]),
- root('inbox-projection','bridge-gap','Stock registers the inbox fold and wire view; ZCode folds splices privately and does not register this projection.','Projection readers cannot request the standard inbox state/view, even when both final private queues are empty.',[loop,26],['@deepseek-ai/dsh-session-projection/lib/index.js',126],'Existing sessionProjections.register / stateOf / wire view; extract or reproduce the loop-owned inbox definition without activating a second loop.'),
- root('system-prefix','intentional','ZCode adds its explicit CLI identity prefix before the same dsh system body. This rule accepts only that exact prefix.','The model receives a different product identity; retained dsh policy body is unchanged.', ['vendor/zcode/apps/zcode-cli/packages/core/src/context/sections/cli-prefix.ts',8],[bridge,638]),
- root('request-tools','bridge-gap','Stock persists the admitted tool schemas in request/header; the event bridge writes only provider/model.','requestHeader reconstruction loses the tool snapshot; successful tool execution does not restore the durable request envelope.',[loop,1217],[session,637],'Existing Session request/header / canonicalHeader / foldRequestHeader and ctx.tools.schemas; connect the admitted request tool set.'),
- root('request-context','bridge-gap','The stock request/context event has no aligned ZCode event. This is a missing event, not index noise.','Session.requestContext() has no provider/model/context metadata to fold.',[loop,1264],[session,1627],'Existing prepared LLM call context and Session.requestContext; emit the installed request/context contract.'),
- root('request-header-policy','bridge-gap','ZCode writes a header for every model request and labels later ones change; stock uses header equality and series boundaries.','Redundant headers and a series → change reason alter durable request provenance.',[bridge,678],[session,637],'Existing canonicalHeader/headerEquals and Session request-header folding; mirror stock admission/series rules.'),
- root('stream-chunking','intentional','The ZCode runtime buffers tool input deltas before publishing model_streaming events. Consecutive argument fragments coalesce to exactly the same id/name/index/argument string.','Token arrival granularity changes; argument bytes, blocks and usage must remain equal. Unknown stream fields do not qualify.', ['vendor/zcode/apps/zcode-cli/packages/core/src/runtime/methods/model.ts',184],[bridge,799]),
- root('assistant-tool-surface','bridge-gap','flushPendingAssistant commits on the first scheduled call and clears the pending assistant; the later call is logged separately but its content block never reaches that assistant surface.','A multi-tool assistant surface loses a tool-call block even though both tools execute. This is a missing surface block, not a scheduler-order allowance.',[bridge,985],[session,1491],'Existing dsh assistant/message ContentBlock array and tool-call journal; retain the complete model call set before surface commit.'),
- root('stream-finish','bridge-gap','The bridge marks an incoming finish as consumed without adding its finish chunk, then suppresses its fallback.','Persisted assistant streams lose the terminal reason although text and usage remain. Replay/assembly defaults can conceal truncation or other finish semantics.',[bridge,825],['@deepseek-ai/dsh-llm/lib/index.js',1000],'Existing AssistantStreamAccumulator and dsh finish chunks; preserve the received reason on the durable stream.'),
- root('goal-deferred-context','bridge-gap','update_goal completion defers a tool-goal notice; stock consumes it as next-step inbox and user/message. ZCode tools.execute maps only content/error back to the engine.','The closing instruction and its durable source are absent. The scripted fixture still returns a closing answer and therefore does not prove instruction delivery.', ['@deepseek-ai/dsh-tool-goal/lib/index.js',364],['src/bridges/tool-bridge.ts',178],'Existing dsh tools scheduler deferred context / stock acceptContext callback and next-step inbox; carry deferred context through the bridge. No new host plugin is evidenced.'),
- root('event-position','noise','Matched events are compared independently of their array position. Only fields equal to their semantic peer, or separately classified peer fields, may collapse here.','Raw event order still differs: inbox claim precedes turn/start in ZCode; scheduled tool/call records may precede earlier results. This count is positional amplification, not a claim of equal execution timing.', ['src/agent.ts',286],[loop,906]),
- root('sequence-reference','noise','A seq/sourceEventSeqs/projection boundary value resolves to the same aligned event on each side.','Different event counts/order change numeric offsets without changing the referenced event.',[bridge,1015],[session,315]),
- root('generated-identity','noise','An assistant message paired by turn/step has a different normalized generated id after the missing notice changes identity collection order.','Only a generated assistant message id is treated as statistical noise; source identities/revisions and content are still checked.',[bridge,963],['scripts/contract-verification/oracle.ts',25]),
- root('unknown','unknown','No narrow source-evidenced rule explains this field/event/set difference.','Requires investigation; never inherits an intentional classification from a nearby known difference.',[bridge,1],[session,1491]),
+ // Original file/line/hash triples describe the pre-repair snapshot. Never hash
+ // repaired files and attach those hashes to obsolete historical line numbers.
+ const historical=historicalLedger().roots.map(r=>({...r,sources:r.sources.map(s=>({...s,snapshot:'historical baseline 1a3bd84; saved original source hash'}))}));
+ return [...historical,
+ root('mock-token-budget','intentional','Only the shared mock route with stock config exactly {model: mock, provider: mock} and ZCode config exactly that plus maxTokens: 32000 qualifies. The engine already chooses this explicit default budget.','The provider receives an explicit output cap where stock omits one. This is intentional existing behavior, not byte equivalence or permission for another budget/route.', ['vendor/zcode/apps/zcode-cli/packages/core/src/runtime/methods/model-token-limits.ts',5],['src/bridges/model-bridge.ts',415]),
+ root('header-tool-order','noise','Both request/header tool arrays must contain unique string names and exactly equal full schemas by name. Only their original array positions differ.','The raw order and every schema value stay in the report. Changed schema fields, duplicates, missing tools or unknown fields do not qualify.', ['src/bridges/tool-bridge.ts',151],['src/bridges/event-store-bridge.ts',723]),
+ root('unknown','unknown','No narrow source-evidenced rule explains this field/event/set difference.','Requires investigation; never inherits an intentional classification from a nearby known difference.', ['src/bridges/event-store-bridge.ts',718],['@deepseek-ai/dsh-session/lib/index.js',1491]),
  ];
 }
+function equalNamedTools(a: unknown, b: unknown): boolean {
+ if(!Array.isArray(a)||!Array.isArray(b)||a.length!==b.length)return false;
+ const valid=(xs:any[])=>xs.every(x=>x&&typeof x==='object'&&typeof x.name==='string')&&new Set(xs.map(x=>x.name)).size===xs.length;
+ if(!valid(a)||!valid(b))return false;
+ return a.every(x=>b.some(y=>x.name===y.name&&diff(x,y).length===0));
+}
+function mockTokenBudget(a: any,b: any): boolean {
+ return diff(a,{model:'mock',provider:'mock'}).length===0&&diff(b,{maxTokens:32000,model:'mock',provider:'mock'}).length===0;
+}
+
 function rows(c: Capture): EventRow[] {
  let turn=0,step=0; const seen=new Map<string,number>();
  return c.events.map((event,index)=>{
@@ -79,6 +87,8 @@ function eventIssues(a: EventRow, b: EventRow, aa: EventRow[], bb: EventRow[]): 
   if(p==='/seq' && a.event.seq===a.index&&b.event.seq===b.index)root='sequence-reference';
   else if(/^\/sourceEventSeqs\/\d+$/.test(p)&&typeof d.stock==='number'&&typeof d.zcode==='number'&&aa[d.stock]?.peer&&aa[d.stock]!.peer===bb[d.zcode])root='sequence-reference';
   else if(a.event.type==='system/message'&&p==='/data/message/content/0/text'&&d.zcode===`You are ZCode, an interactive coding agent\n\n\n${d.stock}`)root='system-prefix';
+  else if(a.event.type==='request/header'&&p==='/data/header/config/maxTokens'&&d.kind==='added'&&mockTokenBudget(a.event.data.header?.config,b.event.data.header?.config))root='mock-token-budget';
+  else if(a.event.type==='request/header'&&p.startsWith('/data/header/tools/')&&equalNamedTools(a.event.data.header?.tools,b.event.data.header?.tools))root='header-tool-order';
   else if(a.event.type==='request/header'&&p==='/data/header/tools'&&d.kind==='removed'&&Array.isArray(d.stock))root='request-tools';
   else if(a.event.type==='request/header'&&p==='/data/reason'&&d.stock==='series'&&d.zcode==='change')root='request-header-policy';
   else if(a.event.type==='assistant/message'&&p.startsWith('/data/stream/')&&streamEquivalent)root=missingFinish&&p===`/data/stream/${sa.length-1}`?'stream-finish':'stream-chunking';
@@ -127,5 +137,6 @@ export function classify(input: Input) {
  }
  const groups=definitions.map(r=>({...r,count:members.filter(m=>m.root===r.id).length,scenarios:[...new Set(members.filter(m=>m.root===r.id).map(m=>m.scenario))],scenarioCounts:Object.fromEntries([...new Set(members.filter(m=>m.root===r.id).map(m=>m.scenario))].map(s=>[s,members.filter(m=>m.root===r.id&&m.scenario===s).length])),samples:members.filter(m=>m.root===r.id).slice(0,3).map(m=>m.id),members:members.filter(m=>m.root===r.id).map(m=>m.id),semanticFacts:facts.filter(f=>f.root===r.id)})).filter(g=>g.count||g.semanticFacts.length);
  const counts={raw:members.length,groups:groups.length,...Object.fromEntries((['intentional','noise','bridge-gap','unknown'] as const).map(c=>[c,members.filter(m=>definitions.find(r=>r.id===m.root)!.classification===c).length])) as Record<Classification,number>};
- return {schemaVersion:1,status:counts.unknown?'UNKNOWN':'CLASSIFIED',equivalence:'FAIL',counts,registrations,groups,members};
+ const semanticIssueCounts=Object.fromEntries((['bridge-gap','unknown'] as const).map(c=>[c,facts.filter(f=>definitions.find(r=>r.id===f.root)!.classification===c).length])) as Record<'bridge-gap'|'unknown',number>;
+ return {schemaVersion:1,status:counts.unknown||semanticIssueCounts.unknown?'UNKNOWN':'CLASSIFIED',equivalence:counts.raw?'FAIL':'PASS',counts,semanticIssueCounts,registrations,groups,members};
 }

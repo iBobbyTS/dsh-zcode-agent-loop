@@ -1,14 +1,17 @@
+import { readFileSync } from 'node:fs';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import { classify, type Input } from './classifier.js';
+import { classify, historicalLedger, historicalLedgerHash, type Input } from './classifier.js';
 import { render, escapeHtml } from './classify.js';
-import { diff } from './oracle.js';
-const input=JSON.parse(await readFile(process.argv[2]??'.agent-work/tmp/contract-classification/baseline-289.json','utf8')) as Input;
+import { diff, hash } from './oracle.js';
+import { readOriginalCapture } from './historical.js';
+const input=process.argv[2]?JSON.parse(await readFile(process.argv[2],'utf8')) as Input:readOriginalCapture();
 const checks:string[]=[];
 function check(name:string,fn:()=>void){fn();checks.push(name);console.log(`[classify:selftest] PASS ${name}`);}
 const report=classify(input);
 function mutate(change:(input:Input)=>void){const copy=structuredClone(input);change(copy);for(const r of copy.results)r.differences=diff(r.stock,r.zcode);return classify(copy);}
 check('all 289 raw differences assigned exactly once',()=>{assert.equal(report.counts.raw,289);assert.equal(new Set(report.members.map(m=>m.id)).size,289);assert.equal(report.groups.reduce((n,g)=>n+g.count,0),289);assert.equal(report.groups.flatMap(g=>g.members).length,289);assert.equal(report.counts.unknown,0);assert.deepEqual(input.results.map(r=>r.differences.length),[56,81,152]);});
+check('immutable historical bytes, membership and saved source citations',()=>{const ledger=historicalLedger();assert.equal(hash(readFileSync('docs/CONTRACT-ORIGINAL-289.json','utf8')),historicalLedgerHash);assert.deepEqual(report.members.map(({evidence,...m})=>m),ledger.members);for(const g of report.groups)assert.deepEqual(g.sources.map(({snapshot,...s})=>s),ledger.roots.find(r=>r.id===g.id)!.sources);});
 check('primary classifications sum without double-counting semantic facts',()=>{assert.equal(report.counts.intentional+report.counts.noise+report.counts['bridge-gap']+report.counts.unknown,289);for(const g of report.groups){assert.equal(Object.values(g.scenarioCounts).reduce((n,v)=>n+v,0),g.count);assert(g.sources.some(s=>s.role==='producer'));assert(g.sources.some(s=>s.role==='consumer'));if(g.classification==='bridge-gap')assert.equal(g.route,'dsh-built-in');}});
 check('service rename is one set change, not missing shared services',()=>{assert.equal(report.groups.find(g=>g.id==='service-name')!.count,48);for(const d of report.registrations as {registry:string;missing:string[];extra:string[]}[])if(d.registry==='services')assert.deepEqual([d.missing,d.extra],[['agentLoop'],['zcodeLoop']]);});
 check('missing request/context is distinct from shifted turn/end',()=>{const g=report.groups.find(g=>g.id==='request-context')!;assert.equal(g.semanticFacts.length,3);assert(g.semanticFacts.every(f=>!f.zcode));const turnEnd=report.members.find(m=>m.scenario==='basic-text'&&m.path==='/events/10')!;assert(['event-position','sequence-reference'].includes(turnEnd.root));});

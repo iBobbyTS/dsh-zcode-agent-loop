@@ -93,8 +93,7 @@ trace、bundle），可直接肉眼检查。
   create/update_goal + goal-round-driver 自动续轮 + todo_write 全链走通——
   依赖三件桥接：user/message producer source 保真、turnBoundary 投影重挂、
   drain 的 initiator 边界（详见 CAPABILITIES.md §2 goal 族行）。已知边界：
-  本插件不发 `agent/pre-step`，goal 驱动器对无效续轮的 fail-closed 拦截不生效
-  （happy path 不受影响）；一个 turn claim 多条消息时 surface 逐条落、引擎拿
+  本插件现在于 claimed-turn admission 调用 `agent/pre-step`，遵守拒绝、消息变换和 series 标记；完整 per-step middleware / 外部 host 压缩同步仍未建立；一个 turn claim 多条消息时 surface 逐条落、引擎拿
   join 后单条文本（stock surface 一致，resume 水合为多条连续 user 消息）。
 - **steering 真语义已支持**（阶段 6）：turn 进行中发送经 `agent.steer` 内联当前轮
   （引擎 `steerTurn` guide），空闲时安全降级排队；inbox live 事件全词表已发。
@@ -124,3 +123,5 @@ trace、bundle），可直接肉眼检查。
 `pnpm verify:matrix` 用已安装 `@deepseek-ai/dsh@0.2.1-alpha.5` 的 stock loop 与 ZCode loop 实际双跑 basic-text、todo-tool、goal-round/source/authority 场景。默认报告写入 `.agent-work/tmp/contract-verification/report.json`，可用 `--out DIR` 指定目录；`--strict-coverage` 对缺口增加门禁。运行后可用 `pnpm verify:contracts:selftest` 验证负向变异与重复运行确定性。
 
 执行 PASS 要求双方场景有效且没有未允许差异；当前初始差分会如实报告 FAIL（包括注册集和事件结构差异），不能把场景断言通过等同于契约一致。完整 shipped base/web profile 家族与最小 mock fixture 分开统计；compact、side 和其他未运行家族显式无场景。此验证不证明 rewind、文件回滚或记忆能力。命令、退出码、归一化/允许项精度、扩展和升级流程见 [CONTRACT-DIFFS.md](docs/CONTRACT-DIFFS.md)，覆盖边界见 [CONTRACT-MATRIX.md](docs/CONTRACT-MATRIX.md)。
+
+当前可操作门禁：`pnpm verify:contracts` 只双跑一次三组场景，随后分类并生成 `.agent-work/tmp/contract-classification/report/index.html`，同时可浏览原始289历史成员。退出0要求实际场景有效且无已知/未知语义缺口；raw matrix FAIL 和 partial coverage 单独保留。`--strict-coverage` 在语义通过而覆盖不足时退出2；`pnpm verify:contracts:status-selftest` 检查精确预算/工具次序规则和失败出口。七类原始缺口已分别由真实 consumer 测试与 parent 浏览器验收修复，详见 [当前修复与历史证据](docs/CONTRACT-ROOT-CAUSES.md)；这不代表所有引擎能力或 profile 插件完整覆盖。
