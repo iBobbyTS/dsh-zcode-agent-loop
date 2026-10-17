@@ -24,6 +24,12 @@ importers:
       '@deepseek-ai/dsh-agent':
         specifier: 0.2.1-alpha.5
         version: 0.2.1-alpha.5(1aed40fa8e413ce36120a7aea80b08aa)
+      '@deepseek-ai/dsh-goal':
+        specifier: 0.2.1-alpha.5
+        version: 0.2.1-alpha.5(@deepseek-ai/cordis@4.0.5)(@deepseek-ai/dsh-agent@0.2.1-alpha.5(1aed40fa8e413ce36120a7aea80b08aa))(@deepseek-ai/dsh-brand@0.2.1-alpha.5(@deepseek-ai/cordis@4.0.5))(@deepseek-ai/dsh-llm@0.2.1-alpha.5(@deepseek-ai/cordis@4.0.5))(@deepseek-ai/dsh-scope@0.2.1-alpha.5(@deepseek-ai/cordis@4.0.5))(@deepseek-ai/dsh-session-projection@0.2.1-alpha.5(@deepseek-ai/cordis@4.0.5)(@deepseek-ai/dsh-session@0.2.1-alpha.5(@deepseek-ai/cordis@4.0.5)(@deepseek-ai/dsh-scope@0.2.1-alpha.5(@deepseek-ai/cordis@4.0.5))))(@deepseek-ai/dsh-session@0.2.1-alpha.5(@deepseek-ai/cordis@4.0.5)(@deepseek-ai/dsh-scope@0.2.1-alpha.5(@deepseek-ai/cordis@4.0.5)))(@deepseek-ai/dsh-typert-protocol@0.2.1-alpha.5(@deepseek-ai/cordis@4.0.5))
+      '@deepseek-ai/dsh-goal-round-driver':
+        specifier: 0.2.1-alpha.5
+        version: 0.2.1-alpha.5(9d46c1de36a621480e9fb619bed3d2d2)
       '@deepseek-ai/dsh-llm':
         specifier: 0.2.1-alpha.5
         version: 0.2.1-alpha.5(@deepseek-ai/cordis@4.0.5)
@@ -39,9 +45,18 @@ importers:
       '@deepseek-ai/dsh-session-persistence-jsonl':
         specifier: 0.2.1-alpha.5
         version: 0.2.1-alpha.5(5cf381f4900170bb767bd6d8f8db2e31)
+      '@deepseek-ai/dsh-session-projection':
+        specifier: 0.2.1-alpha.5
+        version: 0.2.1-alpha.5(@deepseek-ai/cordis@4.0.5)(@deepseek-ai/dsh-session@0.2.1-alpha.5(@deepseek-ai/cordis@4.0.5)(@deepseek-ai/dsh-scope@0.2.1-alpha.5(@deepseek-ai/cordis@4.0.5)))
       '@deepseek-ai/dsh-system-prompt':
         specifier: 0.2.1-alpha.5
         version: 0.2.1-alpha.5(@deepseek-ai/cordis@4.0.5)(@deepseek-ai/dsh-llm@0.2.1-alpha.5(@deepseek-ai/cordis@4.0.5))(@deepseek-ai/dsh-scope@0.2.1-alpha.5(@deepseek-ai/cordis@4.0.5))
+      '@deepseek-ai/dsh-tool-goal':
+        specifier: 0.2.1-alpha.5
+        version: 0.2.1-alpha.5(77c4fbaf539ace63ce205ba8b2bfcccb)
+      '@deepseek-ai/dsh-tool-todo':
+        specifier: 0.2.1-alpha.5
+        version: 0.2.1-alpha.5(@deepseek-ai/cordis@4.0.5)(@deepseek-ai/dsh-agent@0.2.1-alpha.5(1aed40fa8e413ce36120a7aea80b08aa))(@deepseek-ai/dsh-session-projection@0.2.1-alpha.5(@deepseek-ai/cordis@4.0.5)(@deepseek-ai/dsh-session@0.2.1-alpha.5(@deepseek-ai/cordis@4.0.5)(@deepseek-ai/dsh-scope@0.2.1-alpha.5(@deepseek-ai/cordis@4.0.5))))(@deepseek-ai/dsh-session@0.2.1-alpha.5(@deepseek-ai/cordis@4.0.5)(@deepseek-ai/dsh-scope@0.2.1-alpha.5(@deepseek-ai/cordis@4.0.5)))(@deepseek-ai/dsh-tools@0.2.1-alpha.5(a30b8eef5bcbc9f834241bef9902a60e))
       '@deepseek-ai/dsh-tools':
         specifier: 0.2.1-alpha.5
         version: 0.2.1-alpha.5(a30b8eef5bcbc9f834241bef9902a60e)
