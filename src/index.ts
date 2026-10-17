@@ -647,6 +647,8 @@ export class ZcodeLoop extends Service implements AgentFactory {
         // 桥先于 agent 构造；延迟解析本实例，供 schema/metadata/执行共享 scope。
         agent: () => agent,
         acceptContexts: (callId, messages) => agent.acceptToolContexts(callId, messages),
+        // dsh 结果块结构直通 durable tool/result（引擎事件只带文本投影）。
+        onResultContent: (callId, content) => eventBridge.setToolResultContent(callId, content),
       });
       // 生效路由写回 agentOptions：agent.options 的 provider/model 是 persona 段
       // prompt 变量（{{provider}}/{{model}}，web 模板自带 personaPrefix 引用）与

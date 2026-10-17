@@ -364,6 +364,12 @@ export class DshSessionEventStoreBridge implements SessionEventStorePort {
   private startsRequestSeries = false;
   private lastRequest: { provider: string; model: string } | undefined;
   private toolCallSeqs = new Map<string, number>();
+  /**
+   * 桥内成功工具结果的原始 dsh ContentBlock[]（tool-bridge 在执行返回后写入）。
+   * 引擎 `tool_call_result.result.content` 只有文本投影，这里保留结构给
+   * durable tool/result（模型下一请求由 deriveMessages 消费）。
+   */
+  private structuredToolResults = new Map<string, readonly ContentBlock[]>();
   private translatedCount = 0;
   private droppedByType = new Map<string, number>();
   private unknownTypes = new Set<string>();
@@ -454,6 +460,14 @@ export class DshSessionEventStoreBridge implements SessionEventStorePort {
   /** Tool contexts may enter the owning turn only after their durable result. */
   setToolResultListener(listener: (callId: string) => Promise<void>): void {
     this.toolResultListener = listener;
+  }
+
+  /**
+   * 暂存一次成功工具结果的原始 dsh 内容块；tool/result 翻译时一次性取走。
+   * 引擎事件载荷只有文本投影，结构保真必须由执行侧显式带入。
+   */
+  setToolResultContent(callId: string, content: readonly ContentBlock[]): void {
+    this.structuredToolResults.set(callId, content);
   }
 
   /**
@@ -1276,6 +1290,8 @@ export class DshSessionEventStoreBridge implements SessionEventStorePort {
     const callSeq = this.toolCallSeqs.get(payload.toolCallId);
     if (turn === undefined || callSeq === undefined) return;
     const success = payload.result.success;
+    const structured = this.structuredToolResults.get(payload.toolCallId);
+    this.structuredToolResults.delete(payload.toolCallId);
     this.options.session.append(
       "tool/result",
       {
@@ -1283,7 +1299,9 @@ export class DshSessionEventStoreBridge implements SessionEventStorePort {
         step: this.step,
         message: createToolResultMessage({
           callId: ToolCallId(payload.toolCallId),
-          content: [{ type: "text", text: payload.result.content }],
+          content: structured === undefined
+            ? [{ type: "text", text: payload.result.content }]
+            : [...structured],
           isError: !success,
         }),
       },
@@ -1299,6 +1317,7 @@ export class DshSessionEventStoreBridge implements SessionEventStorePort {
     }
     const turn = this.requireTurn();
     const callSeq = this.toolCallSeqs.get(payload.toolCallId);
+    this.structuredToolResults.delete(payload.toolCallId);
     if (turn === undefined || callSeq === undefined) return;
     const message = payload.error?.message ?? "tool call failed";
     this.options.session.append(
@@ -1333,6 +1352,7 @@ export class DshSessionEventStoreBridge implements SessionEventStorePort {
     this.stagedRequest = undefined;
     this.mainRequestPending = false;
     this.startsRequestSeries = false;
+    this.structuredToolResults.clear();
     // v4 关系校验：turn/end 前不允许 open step（消息类事件已在其内落定）。
     if (this.stepOpen) {
       this.options.session.append("step/end", { turn: this.dshTurn(turn), step: this.step });
@@ -1354,6 +1374,7 @@ export class DshSessionEventStoreBridge implements SessionEventStorePort {
     this.stagedRequest = undefined;
     this.mainRequestPending = false;
     this.startsRequestSeries = false;
+    this.structuredToolResults.clear();
     // v4 关系校验：turn/end 前不允许 open step。（错误路径若还有未解析的
     // tool/call，durable 读取会拒绝——原型接受，见冒烟报告缺口。）
     if (this.stepOpen) {

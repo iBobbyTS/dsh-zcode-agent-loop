@@ -13,19 +13,32 @@
  *   由 dsh ToolRuntime 走完整 pre-execute waterfall → guards → 执行 →
  *   post-execute 管线；dsh 工具插件对本桥无感。判别 probe：注册
  *   `tools/pre-execute` listener 计数（pipeline 集成脚本断言 ≥1）。
- * - 结果映射：dsh `ToolExecutionResult.content`（ContentBlock[]）折叠为文本；
- *   `isError` 时抛 `Error`（引擎记 tool 失败 → event-store-bridge 落
- *   `tool/result{isError}`）。
+ * - 结果映射：dsh `ToolExecutionResult.content`（ContentBlock[]）逐块映射进
+ *   引擎 `ModelMessageContent`（text/reasoning 保真；image/file 的 dsh 形态只带
+ *   attachment 引用、没有引擎要求的 dataUrl，降级为可读文本占位并保留元数据；
+ *   未知块 JSON 文本化，不静默丢弃）。`isError` 时抛 `Error`（引擎记 tool 失败
+ *   → event-store-bridge 落 `tool/result{isError}`）。
+ *
+ * 超时与结果预算的唯一权威是 dsh：引擎侧 deadline 按 dsh `ToolDefinition.timeoutMs`
+ * 镜像（未声明 = 无 deadline），结果预算只保留一个宽容的 last-resort 上限，
+ * 不覆盖 dsh spill/裁剪策略。
  *
  * 桥不做缓存策略/权限决策/并发编排（并发归 dsh 管线与引擎各自调度）。
  */
 import type { Context } from "@deepseek-ai/cordis";
 import type { Agent } from "@deepseek-ai/dsh-agent";
-import type { ToolSchema, UserMessage } from "@deepseek-ai/dsh-llm";
+import type { ContentBlock, ToolSchema, UserMessage } from "@deepseek-ai/dsh-llm";
 import { ToolCallId } from "@deepseek-ai/dsh-llm";
 
 import { createToolRegistry } from "../engine-facade.js";
-import type { JsonSchema, ToolEntry, ToolExecutionContext, ToolRegistry } from "../engine-facade.js";
+import type {
+  JsonSchema,
+  ModelMessageContent,
+  ModelMessageContentBlock,
+  ToolEntry,
+  ToolExecutionContext,
+  ToolRegistry,
+} from "../engine-facade.js";
 
 export interface DshToolBridgeOptions {
   /** 挂载了 ToolRuntime（`ctx.tools`）的 Cordis context。 */
@@ -34,6 +47,11 @@ export interface DshToolBridgeOptions {
   agent?: () => Agent | undefined;
   /** Stage contexts until the matching tool/result has reached the session. */
   acceptContexts?: (callId: string, messages: readonly UserMessage[]) => void;
+  /**
+   * 成功结果的原始 dsh ContentBlock[]：交给 event-store 桥落 `tool/result`，
+   * 避免引擎事件载荷的文本投影把结构丢失（spill preview/多块文本/image 引用）。
+   */
+  onResultContent?: (callId: string, content: readonly ContentBlock[]) => void;
   /** 复用既有 registry（缺省新建；引擎侧 built-in 工具也会注册进来）。 */
   registry?: ToolRegistry;
 }
@@ -45,12 +63,25 @@ export interface ToolSyncResult {
   unregistered: string[];
 }
 
-const DSH_TOOL_TIMEOUT_MS = 120_000;
-const DSH_TOOL_BUDGET_BYTES = 262_144;
+/**
+ * last-resort 结果预算，不是策略：dsh spill/裁剪插件已经在执行管线内把 content
+ * 成形（spill 后模型看到 preview + locator）。这里取引擎可接受的最大安全整数，
+ * 保证桥/引擎不会二次截断 dsh 已成形结果；任何真实预算都由 dsh 侧决定。
+ */
+const LAST_RESORT_RESULT_BUDGET_BYTES = Number.MAX_SAFE_INTEGER;
+
+/**
+ * 引擎 deadline 的收尾宽限：声明值本身由 dsh timeout policy 执行，引擎只做
+ * 同值镜像。宽限让 dsh 在引擎计时器之前先中止合作式工具并结算结构化
+ * TOOL_TIMEOUT，避免两个同值计时器竞速时引擎抢先报通用超时。
+ */
+const DSH_TIMEOUT_SETTLE_GRACE_MS = 250;
 
 /** dsh `ToolDefinition` 的本地窄视图（只读注册元数据所需字段）。 */
 interface DshToolDefinitionView {
   isConcurrencySafe?: (args: unknown) => boolean;
+  /** 合作式超时预算；仅由 `@deepseek-ai/dsh-tool-call-timeout-policy` 执行。 */
+  timeoutMs?: number;
 }
 
 function dshDefinitionView(ctx: Context, name: string, agent?: Agent): DshToolDefinitionView | undefined {
@@ -67,6 +98,79 @@ function classifyConcurrentSafe(ctx: Context, name: string, agent?: Agent): bool
   } catch {
     return false;
   }
+}
+
+/**
+ * 引擎侧 deadline 只镜像 dsh 的声明：声明了 `timeoutMs` 就同值，未声明则
+ * `{kind:"none"}` 完全交给 dsh 管线（未装 timeout policy 时就是无 deadline）。
+ * 删除桥自带 120s 常量，避免覆盖宿主策略。
+ */
+function timeoutPolicyFor(declared: number | undefined): ToolEntry["timeout"] {
+  if (typeof declared === "number" && Number.isFinite(declared) && declared > 0) {
+    return {
+      kind: "timed",
+      defaultMs: declared,
+      allowCallOverride: false,
+      cleanupGraceMs: DSH_TIMEOUT_SETTLE_GRACE_MS,
+    };
+  }
+  return { kind: "none" };
+}
+
+/**
+ * dsh 工具结果块 → 引擎模型内容块。引擎的 image/file 块要求 dataUrl，而 dsh
+ * 工具结果里的 image/file 只携带 attachment 引用（字节在 attachment store），
+ * 因此这里不伪造媒体块：保留文本化占位与全部可读元数据，媒体通路留给 T14。
+ */
+export function mapDshToolContent(content: readonly ContentBlock[]): ModelMessageContent {
+  const blocks: ModelMessageContentBlock[] = [];
+  for (const block of content) {
+    switch (block.type) {
+      case "text": {
+        blocks.push({ type: "text", text: block.text });
+        break;
+      }
+      case "reasoning": {
+        // 工具结果不存在独立推理通道；按 text 保留，避免 durable 文本投影吞掉内容。
+        blocks.push({ type: "text", text: block.text });
+        break;
+      }
+      case "image": {
+        const { attachment } = block;
+        const name = attachment.name === undefined ? "" : ` name=${attachment.name}`;
+        blocks.push({
+          type: "text",
+          text: `[image ${attachment.mediaType} attachmentId=${attachment.attachmentId} bytes=${attachment.bytes} ${attachment.width}x${attachment.height}${name}]`,
+        });
+        break;
+      }
+      case "file": {
+        const { attachment } = block;
+        blocks.push({
+          type: "text",
+          text: `[file ${attachment.name} attachmentId=${attachment.attachmentId} bytes=${attachment.bytes}]`,
+        });
+        break;
+      }
+      default: {
+        // merge-extensible 块（tool-call/tool-addition/...）不属于工具结果语义，
+        // 但也不静默丢弃：完整 JSON 文本化。
+        blocks.push({ type: "text", text: JSON.stringify(block) });
+        break;
+      }
+    }
+  }
+  return blocks;
+}
+
+/** 文本投影（durable dsh `tool/result` 与错误正文共用）。 */
+function dshContentText(content: readonly ContentBlock[]): string {
+  return content.map((block): string => {
+    const mapped = mapDshToolContent([block]);
+    return typeof mapped === "string"
+      ? mapped
+      : mapped.map((entry) => (entry.type === "text" ? entry.text : "")).join("");
+  }).join("\n");
 }
 
 /** dsh parameters 投影归一为 ZCode `inputSchema`（缺 type 的兜成 object）。 */
@@ -96,6 +200,8 @@ export function createDshToolBridge(options: DshToolBridgeOptions): DshToolBridg
 
   const entryFor = (schema: ToolSchema, agent: Agent | undefined): ToolEntry => {
     const name = schema.name;
+    const definition = dshDefinitionView(options.ctx, name, agent);
+    const declaredTimeout = definition?.timeoutMs;
     const entry: ToolEntry = {
       capability: `dsh.tool.${name}`,
       inputSchema: normalizeInputSchema(schema.parameters),
@@ -110,11 +216,11 @@ export function createDshToolBridge(options: DshToolBridgeOptions): DshToolBridg
         denyPriority: "afterStaticAllow",
       },
       resultBudget: {
-        maxInlineBytes: DSH_TOOL_BUDGET_BYTES,
-        maxModelBytes: DSH_TOOL_BUDGET_BYTES,
+        maxInlineBytes: LAST_RESORT_RESULT_BUDGET_BYTES,
+        maxModelBytes: LAST_RESORT_RESULT_BUDGET_BYTES,
         strategy: "inline",
       },
-      timeout: { kind: "timed", defaultMs: DSH_TOOL_TIMEOUT_MS, allowCallOverride: true },
+      timeout: timeoutPolicyFor(declaredTimeout),
       cancellation: { supported: true, cleanup: "none", userVisibleMessage: "" },
       // required 是字面量 true（ToolTracePolicy 契约）；观测口径全 none。
       trace: {
@@ -129,13 +235,19 @@ export function createDshToolBridge(options: DshToolBridgeOptions): DshToolBridg
         readOnly: false,
         destructive: false,
         // 元数据映射（任务指定）：dsh isConcurrencySafe → ZCode concurrentSafe。
+        // 注册期只能以 `undefined` 探测：声明式条件安全（按 args 判定）在这里
+        // 一律 fail-closed 成独占，是已知精度边界（引擎调度器只读静态 metadata）。
         concurrentSafe: classifyConcurrentSafe(options.ctx, name, agent),
+        ...(declaredTimeout === undefined ? {} : { timeoutMs: declaredTimeout }),
         needsApproval: false,
         riskLevel: "low",
         sideEffectScope: "none",
       },
       handler: async (input: unknown, context: ToolExecutionContext) =>
         executeThroughDshPipeline(options, schema.name, input, context),
+      // handler 返回 dsh ContentBlock[]；在这里转成引擎模型内容，保真到请求。
+      formatModelContent: (output: unknown) =>
+        mapDshToolContent(Array.isArray(output) ? (output as ContentBlock[]) : []),
     };
     return entry;
   };
@@ -179,7 +291,7 @@ async function executeThroughDshPipeline(
   name: string,
   input: unknown,
   context: ToolExecutionContext,
-): Promise<string> {
+): Promise<ContentBlock[]> {
   const agent = options.agent?.();
   const result = await options.ctx.tools.execute({
     callId: ToolCallId(context.toolCallId),
@@ -188,14 +300,15 @@ async function executeThroughDshPipeline(
     ...(agent === undefined ? {} : { agent }),
     signal: context.abortSignal,
   });
+  // contexts 必须在错误结果上也暂存（T05 语义），先于任何抛出。
   if (result.additionalContexts?.length) {
     options.acceptContexts?.(context.toolCallId, result.additionalContexts);
   }
-  const text = result.content
-    .map((block) => (block.type === "text" ? block.text : `[${block.type} content]`))
-    .join("\n");
+  // 成功结果保留 dsh 块结构给 durable tool/result；失败走错误正文，不落块。
+  if (!result.isError) options.onResultContent?.(context.toolCallId, result.content);
   if (result.isError) {
+    const text = dshContentText(result.content);
     throw new Error(result.error?.message ?? (text.length > 0 ? text : `dsh tool "${name}" failed`));
   }
-  return text;
+  return [...result.content];
 }
