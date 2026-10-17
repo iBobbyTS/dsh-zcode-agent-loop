@@ -329,6 +329,7 @@
     "src/index.ts:Config": "a2d4b4fdd7d37a9751d6598e6759fbb3d812e5cc3cf69596f86755982b4baf1a",
     "src/index.ts:StoredSession": "714cb63001f8d86696a8117b0d0233200c0c691cbc6dc09484da174407dce796",
     "src/index.ts:AssembleAgentInput": "ac74dd7b546fd3d22ac2d887c88d2d2cc02078ea9677549a3b891bb8be6bc075",
+    "src/off-peak.ts:OffPeakWindow": "d41ee5b4483e813febd14d015ecd5d3ebc45d0d1cdff0c2e4ff5ed5420dc916a",
     "src/side-chat.ts:SelectionSideChat": "e7f5fde01ed4a6da45eed456dd06dd2f16b6d6fa3bae849837fee930c0428fcd",
     "vendor/zcode/apps/zcode-cli/packages/core/src/agent/agent-listing-metadata.ts:AgentListingDelta": "769fc40682c4568dd2641d5803d4a76fa0493d63fe0ee0fdbd16c22e79cc18fb",
     "vendor/zcode/apps/zcode-cli/packages/core/src/agent/file-part-hydration.ts:PersistedToolMediaLayoutEntry": "9f96a7897d4b3e221bfcfe9b1fdb6a705411a63411d3c88feb3d49e10d286818",
@@ -4291,7 +4292,8 @@
     "src/bridges/tool-bridge.ts": "c2dea0a43a2e3b45b477fe5a9342e6fc0653d5387465402652ec7f9498358259",
     "src/engine-facade.ts": "30cb57c0b9c41c4d7a27aabd61ad3b407c760b129a3cb435cad070be5ec2b9ac",
     "src/inbox.ts": "4441b5774c185c074bdf80fa4841ef19ee158c1e92aec6644101659181372e18",
-    "src/index.ts": "203202169cf1d1a7aa2eb3ba1935ba44b3ddfb5113805c31f01300645c79115c",
+    "src/index.ts": "4b5282cb127fdaf4cd0975dd1b6512257406163fa5372a4ea9aa3cf42a8e5361",
+    "src/off-peak.ts": "1d69419876c692f3239ed5ae2b7101e15bd46e4f53ea8f64dedc7358ed7d4ac0",
     "src/side-chat.ts": "f1e534f9411979000690e8224e959ff4bc695ca10fcc5cc226988e9e34f9f64d",
     "vendor/zcode/apps/zcode-cli/packages/core/src/agent/agent-listing-metadata.ts": "2191d23972ec0788988cfee12eb7555f0ae5e9f2e23fb7291bb7d6366210f567",
     "vendor/zcode/apps/zcode-cli/packages/core/src/agent/compact-session.ts": "bc73a627e0cb488a13e174fe7081619729f821b2ab544e9b96892656da18fcc4",
@@ -5398,7 +5400,7 @@
     "@deepseek-ai/dsh-web-app/./presets/ptc.patch.yml": "9e355c947bf61c3d2fe9bf3214b386f83c0d99d37579ce22576d4b82cb6e1a2c",
     "@deepseek-ai/dsh-web-app/./presets/minimal.patch.yml": "a2a9ba1c9c392a45466708f18bc0aefbf300577f9b544dc06049f73a8a5b3267",
     "@deepseek-ai/dsh-web-app/./presets/cordis.patch.yml": "01b0fc94fd49136b332254a7ae5658e43ffe646f7248047dba65d499cfc74596",
-    "workspace/pnpm-lock.yaml": "68e5d2e5f40d27e6f483246ce462fa462003dda11ffbe4b72eb3792c177aaf4c",
+    "workspace/pnpm-lock.yaml": "d4e2eecbc76e739bad84c68e2ed342ace229e7290918065e9acf7a7f6eb13ff4",
     "bridge/cordis.patch.yml": "490915fb2c1bca0b07317bd4c06a5a6d6c2be2ce01b9092f2696c3b23dc6aaa3"
   }
 }

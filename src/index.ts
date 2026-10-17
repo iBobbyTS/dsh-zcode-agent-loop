@@ -68,6 +68,7 @@ import { foldRequestHeader, interruptedTurnClosers, SessionLogOffset, SessionSeq
 import { z as zod } from "zod";
 
 import { inboxProjectionDefinition } from "./inbox.js";
+import { registerOffPeakCommands } from "./off-peak.js";
 import { createSelectionSideChat } from "./side-chat.js";
 import { ZcodeLoopAgent } from "./agent.js";
 import type { ZcodeLoopAgentDeps } from "./agent.js";
@@ -388,6 +389,11 @@ export class ZcodeLoop extends Service implements AgentFactory {
           }
         },
       });
+    });
+    // 低峰命令可选注册：schedule 或 commands 缺席时回调不跑（命令不注册），
+    // AgentFactory 本身不声明成硬依赖；条目的持久化/恢复仍归 dsh schedule。
+    ctx.inject(["commands", "schedule"], offPeakCtx => {
+      registerOffPeakCommands(offPeakCtx);
     });
   }
 
