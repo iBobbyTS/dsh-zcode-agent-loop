@@ -21,6 +21,10 @@
     "./workspace-hooks": {
       "types": "./dist/src/workspace-hooks.d.ts",
       "default": "./dist/src/workspace-hooks.js"
+    },
+    "./persistent-js": {
+      "types": "./dist/src/persistent-js.d.ts",
+      "default": "./dist/src/persistent-js.js"
     }
   },
   "dsh": {
@@ -42,6 +46,7 @@
     "verify:history-compaction": "tsx scripts/history-compaction-integration.ts",
     "verify:crash-recovery": "tsx scripts/crash-recovery-integration.ts",
     "verify:agent-lifecycle": "tsx scripts/agent-lifecycle-integration.ts",
+    "verify:browser-cua-repl": "tsx scripts/browser-cua-repl-integration.ts",
     "verify:pipeline": "tsx scripts/pipeline-integration.ts",
     "verify:smoke": "node scripts/smoke.mjs",
     "verify:source-fidelity": "tsx scripts/source-fidelity-integration.ts",
@@ -80,6 +85,7 @@
     "@deepseek-ai/dsh-agent-instructions": "0.2.1-alpha.5",
     "@deepseek-ai/dsh-attachment": "0.2.1-alpha.5",
     "@deepseek-ai/dsh-attachment-local": "0.2.1-alpha.5",
+    "@deepseek-ai/dsh-browser-use": "0.2.1-alpha.5",
     "@deepseek-ai/dsh-commands": "0.2.1-alpha.5",
     "@deepseek-ai/dsh-file-reference": "0.2.1-alpha.5",
     "@deepseek-ai/dsh-file-reference-local": "0.2.1-alpha.5",

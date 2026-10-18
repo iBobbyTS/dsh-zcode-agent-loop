@@ -992,6 +992,8 @@ export class ZcodeLoop extends Service implements AgentFactory {
 export default ZcodeLoop;
 export { ZcodeLoopRuntimes } from "./runtime-seam.js";
 export type { ZcodeLoopRuntimeRelease, ZcodeLoopRuntimeView } from "./runtime-seam.js";
+export { PersistentJs } from "./persistent-js.js";
+export type { PersistentJsConfig } from "./persistent-js.js";
 export { ZcodeLoopAgent } from "./agent.js";
 export { ZcodeLoopInbox } from "./inbox.js";
 export { createDshToolBridge } from "./bridges/tool-bridge.js";
