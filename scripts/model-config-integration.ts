@@ -35,7 +35,7 @@ import SystemPrompt from "@deepseek-ai/dsh-system-prompt";
 import ToolRuntime, { defineTool } from "@deepseek-ai/dsh-tools";
 import * as Jsonl from "@deepseek-ai/dsh-session-persistence-jsonl";
 import ZcodeLoop from "../src/index.js";
-import type { Config } from "../src/index.js";
+import type { ConfigInput } from "../src/index.js";
 
 const EFFORTS = [
   { id: ReasoningEffortId("low"), name: "Low" },
@@ -108,7 +108,7 @@ async function until(predicate: () => boolean, label: string): Promise<void> {
 }
 
 async function mount(options: {
-  plugin: Config;
+  plugin: ConfigInput;
   adapter?: LlmAdapter;
   jsonl?: boolean;
   beforePlugin?: (ctx: Context) => void;

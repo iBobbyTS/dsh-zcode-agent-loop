@@ -289,10 +289,11 @@
     "src/agent.ts:api.invalidateToolCache:1": "1a11920d7907065a3e290d1f66ca1ddfeff2d9b7e11e658b00036abdc61ef90b",
     "src/index.ts:api.resumeFromStore:0": "6deff0f8c0edb42b0e5aff0c4e7c72cdb61d85b833e2d251a45dc1539561898f",
     "src/index.ts:api.resumeFromStore:1": "dfc7f4aa4dd1fa4006c55d82296701ad33bcbe2682ae9dd7e4695963b87d2499",
-    "src/index.ts:api.setSessionModelSelection:0": "c35aa1038042a08e1cbbe53efcc79c6f21871312bce3754469ccf54fda3a25d8",
+    "src/index.ts:api.setSessionModelSelection:0": "75493b2e34ec8b9f8a9556eafd78a9e5b09055d0b1d6300b94ce2f19cadd2ab4",
+    "src/index.ts:api.setSessionModelSelection:1": "c35aa1038042a08e1cbbe53efcc79c6f21871312bce3754469ccf54fda3a25d8",
     "src/agent.ts:api.steerTurn:0": "0ff3d97a0cf040724a063bff625c10a73405afe5eee37b474fedf56bc0688e7c",
     "src/agent.ts:api.steerTurn:1": "0ff3d97a0cf040724a063bff625c10a73405afe5eee37b474fedf56bc0688e7c",
-    "src/index.ts:assembly.createEmbeddedEngine:0": "8b0884c1261e0b1e758bc1b1e528a5d9db801608015273b396cd789d5cf6ec78"
+    "src/index.ts:assembly.createEmbeddedEngine:0": "b1b15288e06a39789b1169282a865fa1da3b51a73de17cf5d2047bc8e5f6f0b1"
   },
   "declarations": {
     "src/agent.ts:ZcodeLoopAgentDeps": "520081477d70ba5c9fe204f2a08d7d6a1f531071118e713eb2ff9f8ab2fa814e",
@@ -345,9 +346,13 @@
     "src/file-checkpoints.ts:ManagedWrite": "04f751c6df6d7176cc795b52cebf8f289de93e71b29ffe494df8cef164c4b5de",
     "src/file-checkpoints.ts:ActiveCall": "54d8b5e8894e1dbc09ad6ef7d584e1da3e35faa047e45aaec1109bb2a3e14378",
     "src/inbox.ts:InboxLiveEvent": "ed00d30bc3f2c1f4170194515ebedc5e33d37edb89b9c8aed40779442a46980c",
-    "src/index.ts:Config": "a2d4b4fdd7d37a9751d6598e6759fbb3d812e5cc3cf69596f86755982b4baf1a",
+    "src/index.ts:ConfigInput": "93533c1c40598ce24486ca3d949681ea6126a5024da139cb587cc3de5018bd2e",
+    "src/index.ts:Config": "e2240d92fb03b292f3c15c43fe9717bdc8ff0594c4dd81316d8f638d242d0bdb",
     "src/index.ts:StoredSession": "714cb63001f8d86696a8117b0d0233200c0c691cbc6dc09484da174407dce796",
     "src/index.ts:AssembleAgentInput": "ac74dd7b546fd3d22ac2d887c88d2d2cc02078ea9677549a3b891bb8be6bc075",
+    "src/index.ts:LiveRoute": "4deb1b4940e111646f0c97c18eba74e62f92867b6f1d75e15acf9f2af808cfcd",
+    "src/index.ts:LoaderEntryView": "b672a3633cf25d60229af0ec7c7947ea5c977f2454438e050c9526f6de1d0716",
+    "src/index.ts:LoaderView": "38258dbfbfb6aecaa347cd1028e1dc205613a467220f380aa9585451997def51",
     "src/off-peak.ts:OffPeakWindow": "d41ee5b4483e813febd14d015ecd5d3ebc45d0d1cdff0c2e4ff5ed5420dc916a",
     "src/persistent-js.ts:PersistentJsConfig": "430d4b76bd2e97aa03dd1af7f2fbf4b7ae9dce6ef7b66e9ecd03962e29c363d5",
     "src/persistent-js.ts:JsInput": "6a529857633a9603df06c5120c0cabdaed5ed480dcc6590d4fddd91447d5db4d",
@@ -4342,7 +4347,7 @@
     "src/engine-facade.ts": "225cf933ad7002a2db1b5abce3fe50da1faf6f3d87378f78fbe08216970077d8",
     "src/file-checkpoints.ts": "e92052fe5800cf0248944229f4cd8b5a487a614bd7fc4dab6fea4ff69d12d469",
     "src/inbox.ts": "4441b5774c185c074bdf80fa4841ef19ee158c1e92aec6644101659181372e18",
-    "src/index.ts": "5c3ffc56e042f8b76bde508d2215d2c78fc062df1fb6dc536933a2cd3d282f2e",
+    "src/index.ts": "8fb1e72cb187f29eaa342986567a6100c7791f2ac3ff73a3b44491a4ffad7e82",
     "src/off-peak.ts": "1d69419876c692f3239ed5ae2b7101e15bd46e4f53ea8f64dedc7358ed7d4ac0",
     "src/persistent-js.ts": "198bc287dbd52f257f5e040fd787dc0dd412d8f87752c268c5561a0848868ba6",
     "src/project-memory.ts": "a4bc7f2623f648d9d53a93f1bf0092d31a8425f7005d2e3a6ae6e00bb73b30df",
@@ -5454,7 +5459,7 @@
     "@deepseek-ai/dsh-web-app/./presets/ptc.patch.yml": "9e355c947bf61c3d2fe9bf3214b386f83c0d99d37579ce22576d4b82cb6e1a2c",
     "@deepseek-ai/dsh-web-app/./presets/minimal.patch.yml": "a2a9ba1c9c392a45466708f18bc0aefbf300577f9b544dc06049f73a8a5b3267",
     "@deepseek-ai/dsh-web-app/./presets/cordis.patch.yml": "01b0fc94fd49136b332254a7ae5658e43ffe646f7248047dba65d499cfc74596",
-    "workspace/pnpm-lock.yaml": "0454c2b0823e939fe538e61360268d6532a6ee3703a42124a267a43f3a6ff441",
+    "workspace/pnpm-lock.yaml": "c60a0397ab372812efd308fc5fae9e4901fad025c8cb7c47cfe5149ea433c810",
     "bridge/cordis.patch.yml": "490915fb2c1bca0b07317bd4c06a5a6d6c2be2ce01b9092f2696c3b23dc6aaa3"
   }
 }

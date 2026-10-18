@@ -45,7 +45,7 @@
  * 档位不恢复（dsh 侧 loggedHeader 的 effort 消费属 controller，不归本插件）。
  */
 import { Service } from "@deepseek-ai/cordis";
-import type { Context } from "@deepseek-ai/cordis";
+import type { Context, Volatile } from "@deepseek-ai/cordis";
 import type {} from "@deepseek-ai/dsh-commands";
 import z from "@deepseek-ai/schemastery";
 import type {
@@ -118,8 +118,13 @@ export class PrototypeUnsupportedError extends Error {
   }
 }
 
-/** 插件配置（cordis.patch.yml 的 row 字段）。 */
-export interface Config {
+/**
+ * 插件配置输入（cordis.patch.yml 的 row 字段）。
+ *
+ * 输出面见 {@link Config}：provider/model 是 volatile 引用（dsh settings 可热改），
+ * 其余字段是启动期旋钮（新建 agent 时读取，已创建 agent 不回溯）。
+ */
+export interface ConfigInput {
   /** dsh llm provider 路由（须已注册 adapter）。 */
   provider: string;
   /** dsh model id。 */
@@ -146,6 +151,47 @@ export interface Config {
    * dsh 无对应物；只暴露引擎级旋钮，不参与工具独占/并行语义判断。
    */
   toolConcurrency?: number;
+  /**
+   * 旧 stock `agent-loop` 字段别名（映射到 {@link toolConcurrency}；两者同时给出时
+   * `toolConcurrency` 优先）。保留别名是为了让沿用 stock row 设置的部署在替换为本
+   * 插件后仍能生效，而不是静默无效。
+   */
+  maxParallelToolCalls?: number;
+}
+
+/**
+ * 运行期解析后的插件配置。provider/model 为 dsh settings 可实时编辑的 volatile
+ * 引用（`loader/volatile-update` 提交后下一请求生效）；其余字段在 agent 装配时读取。
+ */
+export interface Config {
+  /** dsh llm provider 路由（volatile：settings 写入后下一请求生效）。 */
+  provider: Volatile<string>;
+  /** dsh model id（volatile：settings 写入后下一请求生效）。 */
+  model: Volatile<string>;
+  /** 声明给引擎的上下文窗口（透传 model-bridge）。 */
+  contextWindow?: number;
+  /**
+   * 声明给引擎的最大输出 token 上限（Model.optionSpecs.maxOutputTokens.max）。
+   * 三层语义：本字段覆盖引擎 Model 声明（优先于 adapter defaultMaxTokens）；
+   * adapter defaultMaxTokens 仅在无本字段时充作声明上限；dsh
+   * `AgentOptions.maxTokens` 是逐请求上限，不混入声明。
+   */
+  maxOutputTokens?: number;
+  /** 逐字流式开关（默认开；false → 引擎走整段 generateText，无 live frame）。 */
+  streaming?: boolean;
+  /**
+   * 引擎执行限制：单次 turn 内的模型步数上限。dsh AgentOptions 无对应物；
+   * vendored 引擎主循环不消费其原生字段（仅 subagent/memory 路径读取），由本
+   * 插件在准入层实施——超限的后续步按 pre-step 拒绝收口（turn blocked）。
+   */
+  maxTurns?: number;
+  /**
+   * 引擎工具调度并发上限（映射 AgentRuntimeConfig.toolConcurrency.maxConcurrency）。
+   * dsh 无对应物；只暴露引擎级旋钮，不参与工具独占/并行语义判断。
+   */
+  toolConcurrency?: number;
+  /** 旧 stock 字段别名（见 {@link ConfigInput.maxParallelToolCalls}）。 */
+  maxParallelToolCalls?: number;
 }
 
 /** 写句柄 + 已落盘事件数（create/resume 共用的 stored 形状，stock 同名字段）。 */
@@ -306,6 +352,35 @@ const turnBoundaryProjectionDefinition = {
   },
 };
 
+/** 一个 live agent 的路由热更新面（settings volatile 提交后推进下一 turn）。 */
+interface LiveRoute {
+  runtime: AgentRuntime;
+  modelFactory: RefreshableModelFactory;
+}
+
+/** 本插件支持的配置键（未列出的 stock agent-loop 字段必须显式拒绝）。 */
+const SUPPORTED_CONFIG_KEYS = new Set([
+  "provider",
+  "model",
+  "contextWindow",
+  "maxOutputTokens",
+  "streaming",
+  "maxTurns",
+  "toolConcurrency",
+  "maxParallelToolCalls",
+]);
+
+/** 窄化后的 Loader 读面（只用于提示被禁用的 stock row 设置）。 */
+interface LoaderEntryView {
+  options: { id?: string; config?: unknown };
+  disabled: boolean;
+}
+
+interface LoaderView {
+  entries(): Iterable<LoaderEntryView>;
+  await(): Promise<void>;
+}
+
 /**
  * 替换 stock agent-loop 的 zcode loop 工厂。
  * sessionProjections 保持可选；在场时注册标准 inbox 与 turnBoundary。
@@ -313,15 +388,18 @@ const turnBoundaryProjectionDefinition = {
 export class ZcodeLoop extends Service implements AgentFactory {
   static inject = ["agents", "sessions", "llm", "tools", "systemPrompt"];
 
-  static Config: z<Config> = z.object({
-    provider: z.string().required(),
-    model: z.string().required(),
+  static Config: z<ConfigInput, Config> = z.object({
+    // dsh settings 只暴露 volatile 字段：路由是唯一可热改的子集（下一请求生效）。
+    provider: z.string().required().volatile(),
+    model: z.string().required().volatile(),
     contextWindow: z.natural(),
     maxOutputTokens: z.natural(),
     streaming: z.boolean().default(true),
     maxTurns: z.natural(),
     toolConcurrency: z.natural(),
-  }) as unknown as z<Config>;
+    // stock agent-loop 兼容别名（非 volatile：启动期装配旋钮）。
+    maxParallelToolCalls: z.natural(),
+  }) as unknown as z<ConfigInput, Config>;
 
   /**
    * 本插件自己的 fiber ctx（构造参数，构造期捕获）。
@@ -339,10 +417,16 @@ export class ZcodeLoop extends Service implements AgentFactory {
   private readonly liveTeardowns = new Set<() => Promise<void>>();
   private readonly factoryAbort = new AbortController();
   private readonly pendingCreations = new Set<Promise<void>>();
+  /** 每个 live agent 的路由刷新面（volatile provider/model 更新时推进下一 turn）。 */
+  private readonly liveRoutes = new Set<LiveRoute>();
+  /** 生效的引擎工具并发（`toolConcurrency` 优先，回退 stock 别名）。 */
+  private effectiveToolConcurrency: number | undefined;
 
   constructor(ctx: Context, public readonly config: Config) {
     super(ctx, "zcodeLoop");
     this.loopCtx = ctx;
+    this.effectiveToolConcurrency = config.toolConcurrency ?? config.maxParallelToolCalls;
+    this.assertSupportedConfig(config, ctx);
     // 窄接缝先于下面的 teardown effect 注册：fiber 卸载时 effect 逆序执行，
     // 工厂 teardown（释放每个 agent 的 runtime 视图）先于服务注销。
     this.runtimes = new ZcodeLoopRuntimes(ctx);
@@ -355,6 +439,23 @@ export class ZcodeLoop extends Service implements AgentFactory {
       if (failures.length) throw new AggregateError(failures, "Agent factory teardown failed");
     }, "zcodeLoop.liveAgents()");
     ctx.effect(() => ctx.agents.setFactory(this), "zcodeLoop.setFactory()");
+    // dsh settings 的 volatile 提交由 Loader 通知本 fiber。provider/model 是唯一
+    // 可热改的子集：推进所有 live agent 的下一 turn 路由（T07 语义），resolved
+    // 元数据同步刷新；无效路由照发请求，由 dsh llm 层报错。
+    ctx.on("loader/volatile-update" as never, ((paths: readonly (readonly string[])[]) => {
+      if (!paths.some(path => path.length === 0 || path[0] === "provider" || path[0] === "model")) return;
+      void this.applyConfiguredRoute().catch(error => ctx.logger.warn(error));
+    }) as never);
+    // stock `agent-loop` row 被禁用后，其 row 设置不会进入本插件。装载完成后检查
+    // 该 row：可映射的 `maxParallelToolCalls` 映射到引擎并发，其余字段显式提示，
+    // 不让旧 stock 专属设置静默无效。
+    ctx.inject(["loader"], loaderCtx => {
+      const loader = loaderCtx.get("loader") as unknown as LoaderView | undefined;
+      if (loader === undefined) return;
+      void loader.await()
+        .then(() => this.adoptStockAgentLoopSettings(loader, loaderCtx))
+        .catch(error => loaderCtx.logger.warn(error));
+    });
     // 与 stock AgentLoop 相同的两个 prompt 变量（persona 段可能引用）。
     ctx.systemPrompt.variable("provider", (context) => context.agent?.options.provider);
     ctx.systemPrompt.variable("model", (context) => context.agent?.options.model);
@@ -431,6 +532,92 @@ export class ZcodeLoop extends Service implements AgentFactory {
     ctx.inject(["commands", "schedule"], offPeakCtx => {
       registerOffPeakCommands(offPeakCtx);
     });
+  }
+
+  /**
+   * 拒绝在本 row 上出现的其他 stock agent-loop 字段（schemastery 非 strict 会把
+   * 未声明键并入输出，不能靠 schema 静默吞掉）。`agents: []` 是 stock 默认值，
+   * 视为显式 no-op 并提示；非空 declarative agents 无法映射，明确报错。
+   */
+  private assertSupportedConfig(config: Config, ctx: Context): void {
+    const unknown = Object.keys(config).filter(key => !SUPPORTED_CONFIG_KEYS.has(key));
+    if (unknown.length > 0) {
+      const stockOnly = unknown.filter(key => key !== "agents");
+      if (stockOnly.length > 0) {
+        throw new TypeError(
+          `zcode-loop does not support stock agent-loop config field(s): ${stockOnly.join(", ")}` +
+            " (supported legacy mapping: maxParallelToolCalls -> toolConcurrency)",
+        );
+      }
+    }
+    const agents = (config as Config & { agents?: unknown }).agents;
+    if (agents === undefined) return;
+    if (Array.isArray(agents) && agents.length === 0) {
+      ctx.logger.info("zcode-loop: stock agent-loop \"agents: []\" is a no-op; declarative agents are not supported");
+      return;
+    }
+    throw new TypeError(
+      "zcode-loop does not support stock agent-loop declarative agents; create or resume agents through the dsh launcher/Agent API",
+    );
+  }
+
+  /**
+   * 检查被禁用的 stock `agent-loop` row：`maxParallelToolCalls` 在本插件未显式
+   * 配置并发时映射到 `toolConcurrency`；其他字段无法映射，逐项 warning。因此
+   * “旧 stock 专属设置”要么生效、要么在启动日志里出现明确提示。
+   */
+  private adoptStockAgentLoopSettings(loader: LoaderView, ctx: Context): void {
+    const stock = [...loader.entries()].find(entry => entry.options.id === "agent-loop");
+    if (stock === undefined || stock.disabled !== true) return;
+    const raw = stock.options.config;
+    if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return;
+    const config = raw as Record<string, unknown>;
+    const unsupported = Object.keys(config).filter(key => key !== "maxParallelToolCalls" && key !== "agents");
+    if (unsupported.length > 0) {
+      ctx.logger.warn(
+        `zcode-loop: disabled stock agent-loop row carries unsupported setting(s) ${unsupported.join(", ")}; they have no effect under this plugin`,
+      );
+    }
+    const agents = config.agents;
+    if (agents !== undefined && (!Array.isArray(agents) || agents.length > 0)) {
+      ctx.logger.warn(
+        "zcode-loop: disabled stock agent-loop row declares agents; declarative agents cannot be mapped and are not started",
+      );
+    }
+    const legacy = config.maxParallelToolCalls;
+    if (legacy === undefined) return;
+    if (typeof legacy !== "number" || !Number.isSafeInteger(legacy) || legacy < 1) {
+      ctx.logger.warn(`zcode-loop: disabled stock agent-loop maxParallelToolCalls=${String(legacy)} is invalid; ignored`);
+      return;
+    }
+    if (this.config.toolConcurrency !== undefined || this.config.maxParallelToolCalls !== undefined) {
+      ctx.logger.info(
+        `zcode-loop: disabled stock agent-loop maxParallelToolCalls=${legacy} is overridden by the zcode-loop row`,
+      );
+      return;
+    }
+    this.effectiveToolConcurrency = legacy;
+    ctx.logger.info(`zcode-loop: mapped disabled stock agent-loop maxParallelToolCalls=${legacy} to toolConcurrency`);
+  }
+
+  /**
+   * dsh settings 提交 provider/model 后推进所有 live agent 的下一 turn 路由。
+   * 与 `applyModelSelection` 同语义：resolved 查询失败不阻塞，selection 照发，
+   * 无效路由由 dsh llm 层报错。
+   */
+  private async applyConfiguredRoute(): Promise<void> {
+    const provider = this.config.provider.get();
+    const model = this.config.model.get();
+    await Promise.all([...this.liveRoutes].map(async ({ runtime, modelFactory }) => {
+      let resolved: LlmResolvedModelInfo | undefined;
+      try {
+        resolved = await this.loopCtx.llm.resolveModelInfo(provider, model);
+      } catch {
+        resolved = undefined;
+      }
+      modelFactory.refresh(resolved === undefined ? {} : { resolved });
+      runtime.setSessionModelSelection({ providerId: provider, modelId: model });
+    }));
   }
 
   private async duringCreation(ownerCtx: Context, callerSignal: AbortSignal | undefined, operation: (signal: AbortSignal) => Promise<AgentHandle>): Promise<AgentHandle> {
@@ -652,6 +839,7 @@ export class ZcodeLoop extends Service implements AgentFactory {
     let teardownPromise: Promise<void> | undefined;
     let unfollowOwner: (() => void | Promise<void>) | undefined;
     let unfollowScope: (() => void | Promise<void>) | undefined;
+    let liveRoute: LiveRoute | undefined;
     const creationAbort = new AbortController();
     const creationSignal = AbortSignal.any([creationAbort.signal, ...(input.signal ? [input.signal] : [])]);
     let publication: Promise<void> | undefined;
@@ -660,8 +848,8 @@ export class ZcodeLoop extends Service implements AgentFactory {
       if (publication) await publication.catch(() => {});
       const failures: unknown[] = [];
       for (const dispose of [() => created?.dispose(), () => this.runtimes.release(created),
-        () => offModelSelection?.(), () => detachAgent?.(),
-        () => detachSession?.(), () => stored?.handle.close()]) {
+        () => offModelSelection?.(), () => { if (liveRoute !== undefined) this.liveRoutes.delete(liveRoute); },
+        () => detachAgent?.(), () => detachSession?.(), () => stored?.handle.close()]) {
         try { await dispose(); } catch (failure) { failures.push(failure); }
       }
       this.liveTeardowns.delete(dispose);
@@ -683,8 +871,8 @@ export class ZcodeLoop extends Service implements AgentFactory {
       ) {
         throw new TypeError("agent maxTokens must be a positive safe integer");
       }
-      const provider = agentOptions.provider ?? this.config.provider;
-      const model = agentOptions.model ?? this.config.model;
+      const provider = agentOptions.provider ?? this.config.provider.get();
+      const model = agentOptions.model ?? this.config.model.get();
 
       // ---- dsh 路由真实元数据（引擎面 Model 声明的首选来源）----
       // 查询失败不阻塞装配（stock 同样在装配期不解析元数据），但也不回落硬编码
@@ -831,9 +1019,9 @@ export class ZcodeLoop extends Service implements AgentFactory {
           modelStreaming: this.config.streaming === false ? "off" : "on",
           // 引擎执行限制（dsh 无对应物）：直接透传引擎原生 config 字段。
           ...(this.config.maxTurns === undefined ? {} : { maxTurns: this.config.maxTurns }),
-          ...(this.config.toolConcurrency === undefined
+          ...(this.effectiveToolConcurrency === undefined
             ? {}
-            : { toolConcurrency: { maxConcurrency: this.config.toolConcurrency } }),
+            : { toolConcurrency: { maxConcurrency: this.effectiveToolConcurrency } }),
         },
         deps: {
           toolRegistry: toolBridge.registry,
@@ -853,6 +1041,9 @@ export class ZcodeLoop extends Service implements AgentFactory {
         },
       });
       agentDeps.runtime = runtime;
+      // 记录路由热更新面：settings 改 provider/model 时推进本 agent 的下一 turn。
+      liveRoute = { runtime, modelFactory };
+      this.liveRoutes.add(liveRoute);
       agentDeps.refreshHistory = async () => {
         const messages = await translateDshEventsToEngineMessages(
           session.snapshotEvents(),

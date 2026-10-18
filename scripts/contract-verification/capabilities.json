@@ -277,7 +277,7 @@
       "id": "runtime-policy-knobs",
       "title": "循环和调度策略配置（已暴露）",
       "disposition": "bridged",
-      "reason": "maxTurns 由桥准入层实施（超限步按 pre-step 拒绝收口为 blocked；vendored 引擎主循环不消费其原生字段，透传仅供后续版本）并经探针验证；工具并发经 Config 透传 AgentRuntimeConfig.toolConcurrency；dsh AgentOptions 无对应物。",
+      "reason": "maxTurns 由桥准入层实施（超限步按 pre-step 拒绝收口为 blocked；vendored 引擎主循环不消费其原生字段，透传仅供后续版本）并经探针验证；工具并发经 Config 透传 AgentRuntimeConfig.toolConcurrency（stock maxParallelToolCalls 为兼容别名）；dsh AgentOptions 无对应物。",
       "evidence": [
         {
           "file": "src/index.ts",
@@ -285,7 +285,7 @@
         },
         {
           "file": "src/index.ts",
-          "needle": "toolConcurrency: { maxConcurrency: this.config.toolConcurrency }"
+          "needle": "toolConcurrency: { maxConcurrency: this.effectiveToolConcurrency }"
         },
         {
           "file": "src/agent.ts",
