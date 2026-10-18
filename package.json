@@ -75,7 +75,11 @@
     "verify:contracts:status-selftest": "tsx scripts/contract-verification/status-selftest.ts",
     "verify:acceptance": "tsx scripts/contract-verification/acceptance.ts",
     "verify:capabilities": "tsx scripts/contract-verification/capabilities.ts",
-    "verify:capabilities:selftest": "tsx scripts/contract-verification/capabilities-selftest.ts"
+    "verify:capabilities:selftest": "tsx scripts/contract-verification/capabilities-selftest.ts",
+    "upgrade:manifest": "tsx scripts/upgrade/manifest.ts",
+    "upgrade:diff": "tsx scripts/upgrade/diff.ts",
+    "upgrade:drill": "tsx scripts/upgrade/drill.ts",
+    "verify:upgrade": "tsx scripts/upgrade/selftest.ts"
   },
   "dependencies": {
     "@zcode/contracts": "workspace:*",
