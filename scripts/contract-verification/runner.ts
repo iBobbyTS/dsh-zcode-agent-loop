@@ -4,7 +4,7 @@ import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { anchor, normalize, diff, applyAllowances, profiles, inventory, familyMatrix, hash } from './oracle.js';
 import type { Scenario } from './fixture.js';
-export const scenarios:Scenario[]=['basic-text','todo-tool','goal-round'];
+export const scenarios:Scenario[]=['basic-text','todo-tool','goal-round','tool-round-trip','cancel-mid-stream','queued-followup'];
 export function capture(engine:'stock'|'zcode',scenario:Scenario,mutation?:'missing-turnBoundary'):Promise<unknown> {
  return new Promise((accept,reject)=>{ const child=spawn(process.execPath,['--import','tsx',fileURLToPath(new URL('./child.ts',import.meta.url)),engine,scenario,...(mutation?[mutation]:[])],{stdio:['ignore','pipe','pipe']});let stdout='',stderr=''; const timer=setTimeout(()=>{child.kill('SIGKILL');reject(new Error(`${engine}/${scenario} timed out (30s); ${stderr.slice(-2000)}`));},30000);
  child.stdout.on('data',b=>stdout+=String(b)); child.stderr.on('data',b=>stderr+=String(b)); child.on('error',e=>{clearTimeout(timer);reject(e);}); child.on('close',code=>{clearTimeout(timer);const line=stdout.split('\n').find(s=>s.startsWith('CONTRACT_RESULT=')); if(code!==0||!line) reject(new Error(`${engine}/${scenario} exited ${code}: ${stderr.slice(-4000)} ${stdout.slice(-1000)}`)); else {try{accept(JSON.parse(line.slice('CONTRACT_RESULT='.length)));}catch(e){reject(e);}} }); });
@@ -25,7 +25,7 @@ export async function runMatrix() {
  console.log(`[matrix] ${scenario}: ${results.at(-1)!.status}, ${differences.length} differences`);
  }
  // Evidence maps identify exercised consumers, never all loaded plugins.
- const triggered:Record<string,string[]>={}; for(const r of results) if(Object.keys(r.errors).length===0) {for(const name of ['agent-loop','agent','session','llm']) (triggered[`@deepseek-ai/dsh-${name}`]??=[]).push(r.scenario); if(r.scenario!=='basic-text') for(const name of ['tools','tool-todo']) (triggered[`@deepseek-ai/dsh-${name}`]??=[]).push(r.scenario); if(r.scenario==='goal-round') for(const name of ['goal','goal-round-driver','tool-goal','session-projection']) (triggered[`@deepseek-ai/dsh-${name}`]??=[]).push(r.scenario); }
+ const triggered:Record<string,string[]>={}; for(const r of results) if(Object.keys(r.errors).length===0) {for(const name of ['agent-loop','agent','session','llm']) (triggered[`@deepseek-ai/dsh-${name}`]??=[]).push(r.scenario); if(['todo-tool','tool-round-trip','goal-round'].includes(r.scenario)) for(const name of ['tools','tool-todo']) (triggered[`@deepseek-ai/dsh-${name}`]??=[]).push(r.scenario); if(r.scenario==='goal-round') for(const name of ['goal','goal-round-driver','tool-goal','session-projection']) (triggered[`@deepseek-ai/dsh-${name}`]??=[]).push(r.scenario); }
  const families=familyMatrix(profile.names,triggered);
  const gaps={families:families.filter(r=>r.status==='no-scenario').length,obligations:stockInventory.obligations.filter(r=>r.status==='unknown').length};
  const counts={scenarios:results.length,passed:results.filter(r=>r.status==='PASS').length,failed:results.filter(r=>r.status==='FAIL').length,differences:results.reduce((n,r)=>n+r.differences.length,0),allowed:0,...gaps};

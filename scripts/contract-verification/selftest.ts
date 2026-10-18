@@ -7,7 +7,7 @@ const checks: {name:string;status:string}[]=[];
 function check(name:string, action:()=>void) {action();checks.push({name,status:'PASS'});console.log(`[contracts:selftest] PASS ${name}`);}
 const reportPath=resolve(process.argv[2]??'.agent-work/tmp/contract-verification/report.json');
 const report=JSON.parse(await readFile(reportPath,'utf8')) as {results:{scenario:string;stock:unknown;zcode:unknown;errors:Record<string,string>}[]};
-assert.equal(report.results.length,3,'run verify:matrix before selftest');
+assert.equal(report.results.length,scenarios.length,'run verify:matrix before selftest');
 for(const row of report.results) assert.deepEqual(row.errors,{},`${row.scenario} must contain real successful captures`);
 const base=report.results.find(r=>r.scenario==='goal-round')!.stock as {events:{type:string;data:Record<string,unknown>}[];projections:Record<string,unknown>;ready:{projections:string[]}};
 function mutation(name:string, mutate:(copy:typeof base)=>void) {check(name,()=>{const copy=structuredClone(base);mutate(copy);const failures=applyAllowances('goal-round',diff(base,copy),[]).unallowed;assert(failures.length>0,`${name} was swallowed`);});}
