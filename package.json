@@ -13,6 +13,10 @@
     "./file-checkpoints": {
       "types": "./dist/src/file-checkpoints.d.ts",
       "default": "./dist/src/file-checkpoints.js"
+    },
+    "./project-memory": {
+      "types": "./dist/src/project-memory.d.ts",
+      "default": "./dist/src/project-memory.js"
     }
   },
   "dsh": {
@@ -47,6 +51,7 @@
     "verify:subagent-sidechat": "tsx scripts/subagent-sidechat-integration.ts",
     "verify:branch-rerun": "tsx scripts/branch-rerun-integration.ts",
     "verify:file-checkpoints": "tsx scripts/file-checkpoints-integration.ts",
+    "verify:project-memory": "tsx scripts/project-memory-integration.ts",
     "verify:workflow": "tsx scripts/workflow-integration.ts",
     "verify:jobs-schedule": "tsx scripts/jobs-schedule-integration.ts",
     "verify:runtime-seam": "tsx scripts/runtime-seam-integration.ts",
