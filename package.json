@@ -17,6 +17,10 @@
     "./project-memory": {
       "types": "./dist/src/project-memory.d.ts",
       "default": "./dist/src/project-memory.js"
+    },
+    "./workspace-hooks": {
+      "types": "./dist/src/workspace-hooks.d.ts",
+      "default": "./dist/src/workspace-hooks.js"
     }
   },
   "dsh": {
@@ -52,6 +56,7 @@
     "verify:branch-rerun": "tsx scripts/branch-rerun-integration.ts",
     "verify:file-checkpoints": "tsx scripts/file-checkpoints-integration.ts",
     "verify:project-memory": "tsx scripts/project-memory-integration.ts",
+    "verify:workspace-hooks": "tsx scripts/workspace-hooks-integration.ts",
     "verify:workflow": "tsx scripts/workflow-integration.ts",
     "verify:jobs-schedule": "tsx scripts/jobs-schedule-integration.ts",
     "verify:runtime-seam": "tsx scripts/runtime-seam-integration.ts",
